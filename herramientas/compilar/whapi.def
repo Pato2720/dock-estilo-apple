@@ -8,3 +8,4 @@ Wh_SetStringValue
 Wh_GetIntSetting
 Wh_GetStringSetting
 Wh_FreeStringSetting
+Wh_SetFunctionHook

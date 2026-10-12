@@ -7,3 +7,4 @@ herramientas/pruebas/out/
 herramientas/pruebas/png/
 *.pdb
 *.lib
+build-menus.log

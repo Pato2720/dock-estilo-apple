@@ -257,6 +257,8 @@ static void DefaultSettings() {
     SetSetting(L"middleClick", L"newWindow");
     SetSetting(L"scrollAction", L"cycle");
     SetSetting(L"lockItems", L"0");
+    SetSetting(L"startAction", L"startMenu");
+    SetSetting(L"frameRate", L"monitor");
 }
 
 static void MakeLnk(const std::wstring& lnk, const std::wstring& target) {
@@ -415,7 +417,7 @@ int wmain() {
         int blackIcons = 0;
         OnUi([&] {
             hide = g_hide.x; fs = g_fgFullscreen; mx = g_fgMaximized;
-            HWND fg = GetForegroundWindow(); fgc = fg ? ClassOf(fg) : L"(ninguna)";
+            HWND fg = GetForegroundWindow(); fgc = fg ? std::wstring(ClassName(fg).s) : L"(ninguna)";
             for (auto& kv : g_icons) {
                 if (kv.first.rfind(L"::ph", 0) == 0) continue;
                 states[std::clamp(kv.second.state, 0, 3)]++;
@@ -1413,6 +1415,28 @@ int wmain() {
         DWORD gdi1 = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
         printf("    objetos GDI antes/después: %lu / %lu\n", gdi0, gdi1);
         Check(gdi1 <= gdi0 + 4, "Sin fugas de objetos GDI");
+        // Con tope de 60 cuadros por segundo (en el monitor de 120 Hz).
+        SetSetting(L"frameRate", L"max60");
+        Wh_ModSettingsChanged();
+        Pump(500);
+        g_frameStamps.clear();
+        g_frameLat.clear();
+        g_recordFrames = true;
+        MouseGlide((int)items[1].cx, (int)y, (int)items[items.size() - 2].cx, (int)y, 500);
+        MouseGlide((int)items[items.size() - 2].cx, (int)y, (int)items[1].cx, (int)y, 500);
+        g_recordFrames = false;
+        if (g_frameStamps.size() > 10) {
+            double span = (g_frameStamps.back() - g_frameStamps.front()) * 1000.0 / qf;
+            double mean = span / (g_frameStamps.size() - 1);
+            printf("    con tope de 60: %zu cuadros, intervalo medio %.2f ms (%.0f fps)\n", g_frameStamps.size(), mean,
+                   1000 / mean);
+            Check(mean > 15.5 && mean < 18.5, "Con el tope de 60 corre a ~60 cuadros por segundo");
+        } else {
+            Check(false, "Con el tope de 60 corre a ~60 cuadros por segundo");
+        }
+        SetSetting(L"frameRate", L"monitor");
+        Wh_ModSettingsChanged();
+        Pump(500);
     }
 
     printf("\n== 13. Desactivar el mod ==\n");
