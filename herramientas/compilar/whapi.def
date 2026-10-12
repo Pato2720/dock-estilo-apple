@@ -1,0 +1,10 @@
+LIBRARY windhawk.dll
+EXPORTS
+Wh_Log_External
+Wh_GetIntValue
+Wh_SetIntValue
+Wh_GetStringValue
+Wh_SetStringValue
+Wh_GetIntSetting
+Wh_GetStringSetting
+Wh_FreeStringSetting

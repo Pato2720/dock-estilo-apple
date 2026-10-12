@@ -1,0 +1,9 @@
+*.dll
+*.exe
+*.a
+build.log
+run.log
+herramientas/pruebas/out/
+herramientas/pruebas/png/
+*.pdb
+*.lib
