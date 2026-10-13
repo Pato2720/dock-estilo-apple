@@ -8,3 +8,5 @@ herramientas/pruebas/png/
 *.pdb
 *.lib
 build-menus.log
+menu-estilo-apple/pruebas/out/
+menu-estilo-apple/pruebas/png/

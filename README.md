@@ -44,8 +44,8 @@ Windows 11 por un Dock como el de macOS, abajo de la pantalla principal.
 3. Ajusta la configuración del mod a tu gusto.
 
 Hace pareja con el mod **Muesca superior estilo Apple** (barra de menús,
-reloj y bandeja arriba) y con **Menús estilo Apple** (abajo), que está en
-este mismo repositorio.
+reloj y bandeja arriba) y con **Menús estilo Apple**, un mod aparte que está en
+[`menu-estilo-apple/`](menu-estilo-apple/).
 
 ## Configuración
 
@@ -77,45 +77,20 @@ segundo.
 
 ## Menús estilo Apple
 
-Segundo mod, [`menu-estilo-apple.wh.cpp`](menu-estilo-apple.wh.cpp): cambia
-el estilo de los menús del clic derecho y de los menús desplegables en el
-escritorio, el Explorador y las aplicaciones, con los mismos colores que el
-menú del Dock.
-
-![Menús claro y oscuro, con resaltado neutro y de acento](capturas/menus-estilo-apple.png)
-
-- Fondo liso claro u oscuro (según el tema de cada menú), sin la franja de
-  los iconos.
-- Resaltado en pastilla redondeada, gris neutro o con el color de acento.
-- Palomita, punto de opción y flecha de submenú vectoriales, con antialias.
-- Separadores finos, esquinas más redondeadas y un borde fino (DWM).
-- Opción para que el escritorio y el Explorador usen el menú clásico
-  completo: el menú nuevo de Windows 11 no se puede restilar. Puede hacer
-  falta reiniciar el Explorador la primera vez; al desactivar el mod vuelve
-  el de Windows 11.
-
-Se instala igual que el Dock (*Crear un mod nuevo* y pegar el archivo). Se
-engancha a las funciones de dibujo de temas de Windows (`uxtheme`), así que
-no cambia los menús que las apps dibujan por su cuenta (Chrome, Firefox,
-Office, apps de la Tienda).
-
-> La captura sale del banco de pruebas: los menús se dibujan con el código
-> del mod, pero las esquinas, el borde y la sombra (que en Windows pone DWM)
-> están simulados en la imagen.
+Mod aparte, en su propia carpeta: [`menu-estilo-apple/`](menu-estilo-apple/).
+Cambia el estilo de los menús del clic derecho y de los menús desplegables en
+el escritorio, el Explorador y las aplicaciones, con los mismos colores que el
+menú del Dock. No necesita el Dock.
 
 ## Herramientas
 
 - `herramientas/compilar/compilar.sh`: compila el mod igual que Windhawk
   (clang + mingw-w64 vía `pip install ziglang`) para revisar errores y
-  advertencias fuera de Windhawk. Con `SRC=../../menu-estilo-apple.wh.cpp`
-  compila el de los menús.
+  advertencias fuera de Windhawk.
 - `herramientas/pruebas/`: banco de pruebas que carga el mod sin cambios en
   Wine, con una barra de tareas simulada, y recorre los escenarios con el
   mouse simulado (101 comprobaciones: clics, arrastres, menú, vista de
-  ventanas, Finalizar tarea, esconderse, 120 fps, tope de 60…). `menus.sh`
-  hace lo mismo con el mod de los menús (qué temas son de menú, el menú
-  clásico del Explorador) y dibuja menús de muestra; `menus_png.py` los pasa
-  a PNG.
+  ventanas, Finalizar tarea, esconderse, 120 fps, tope de 60…).
 
 ## Limitaciones
 

@@ -2,7 +2,7 @@
 // @id              dock-estilo-apple
 // @name            Dock estilo Apple
 // @description     Reemplaza la barra de tareas por un Dock estilo macOS: ampliación fluida a la frecuencia del monitor, cristal líquido, arrastrar para ordenar y la papelera de Windows
-// @version         3.1
+// @version         3.2
 // @author          local
 // @include         explorer.exe
 // @architecture    x86-64
@@ -4428,8 +4428,14 @@ static void RenderPopup() {
     } else if (g_pop.kind == PopKind::Preview) {
         DockItem* item = FindByUid(g_pop.itemUid);
         Gdiplus::SolidBrush tb(text);
+        // Nombre de la app, centrado.
         Gdiplus::RectF titleRc((float)M + S(12), (float)M + S(4), (float)(g_pop.w - 2 * M - S(24)), (float)S(28));
-        g.DrawString(g_pop.title.c_str(), (INT)g_pop.title.size(), g_fontBold.get(), titleRc, &sf, &tb);
+        Gdiplus::StringFormat hf;
+        hf.SetAlignment(Gdiplus::StringAlignmentCenter);
+        hf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        hf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+        hf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+        g.DrawString(g_pop.title.c_str(), (INT)g_pop.title.size(), g_fontBold.get(), titleRc, &hf, &tb);
         const IconSet* set = item ? IconFor(*item) : nullptr;
         for (size_t i = 0; i < g_pop.prev.size(); i++) {
             const PrevEntry& e = g_pop.prev[i];
@@ -4464,8 +4470,12 @@ static void RenderPopup() {
                     g.DrawString(m.c_str(), (INT)m.size(), g_fontSmall.get(),
                                  Gdiplus::RectF(pxl, pyl, pw, ph), &cf, &db);
                 }
-                Gdiplus::RectF tr((float)e.card.left + S(8), (float)e.thumbRc.bottom + S(4),
-                                  (float)(e.card.right - e.card.left - S(16)), (float)S(22));
+                // Título de la ventana en la fila de arriba, centrado y sin
+                // llegar a la X (mismo margen a los dos lados).
+                int side = e.card.right - e.closeRc.left + S(4);
+                float rowH = (float)(e.closeRc.top + e.closeRc.bottom - 2 * e.card.top);  // la X va centrada en la fila
+                Gdiplus::RectF tr((float)(e.card.left + side), (float)e.card.top,
+                                  (float)(e.card.right - e.card.left - 2 * side), rowH);
                 Gdiplus::StringFormat cf;
                 cf.SetAlignment(Gdiplus::StringAlignmentCenter);
                 cf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
@@ -5030,7 +5040,11 @@ static bool LayoutPreview(DockItem& it) {
     GetMonitorInfoW(g_monitor, &mi);
     int monW = mi.rcMonitor.right - mi.rcMonitor.left;
     int pad = S(10), headH = S(34);
-    int cardW = S(214), thumbW = S(198), thumbH = S(122), cardH = thumbH + S(16) + S(26);
+    // Cada tarjeta: arriba una fila con el título y la X; abajo la
+    // miniatura. La miniatura en vivo la dibuja Windows encima de la
+    // ventana, así que nada propio (como la X) puede ir sobre ella.
+    int rowH = S(28);
+    int cardW = S(214), thumbW = S(198), thumbH = S(122), cardH = rowH + thumbH + S(10);
     int maxCols = std::max(1, (monW - 2 * M - S(40)) / (cardW + S(6)));
     g_pop.list = g_set.previews == Previews::List || (int)g_pop.prev.size() > maxCols;
     if (!g_pop.list) {
@@ -5053,7 +5067,7 @@ static bool LayoutPreview(DockItem& it) {
             double ww = std::max<LONG>(1, wr.right - wr.left), wh = std::max<LONG>(1, wr.bottom - wr.top);
             double k = std::min(thumbW / ww, thumbH / wh);
             int tw = std::max(S(40), (int)std::lround(ww * k)), th = std::max(S(30), (int)std::lround(wh * k));
-            int tx = x + (cardW - tw) / 2, ty = y + S(8) + (thumbH - th) / 2;
+            int tx = x + (cardW - tw) / 2, ty = y + rowH + (thumbH - th) / 2;
             e.thumbRc = RECT{tx, ty, tx + tw, ty + th};
             if (e.snap && !e.snap->mips.empty()) {
                 // El nivel más chico que todavía alcance, sin su borde.
@@ -5071,7 +5085,7 @@ static bool LayoutPreview(DockItem& it) {
                 e.snapFit = Resample(core, tw, th);
             }
             int cs = S(20);
-            e.closeRc = RECT{x + cardW - cs - S(4), y + S(4), x + cardW - S(4), y + S(4) + cs};
+            e.closeRc = RECT{x + cardW - cs - S(6), y + (rowH - cs) / 2, x + cardW - S(6), y + (rowH + cs) / 2};
             x += cardW + S(6);
         }
         g_pop.w = w + 2 * M;

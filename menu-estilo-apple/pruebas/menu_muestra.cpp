@@ -39,7 +39,7 @@ BOOL Wh_SetFunctionHook(void* target, void* hook, void** original) {
 }
 
 // ---- El mod, sin cambios ----
-#include "../../menu-estilo-apple.wh.cpp"
+#include "../menu-estilo-apple.wh.cpp"
 
 static int g_pass = 0, g_fail = 0;
 static void Check(bool ok, const char* what) {
@@ -177,6 +177,20 @@ int wmain() {
           "Uno desconocido fuera de un menú no se toca ni se anota");
     CloseThemeData_Hook(other);
     Check(!g_themes.count(other), "Al cerrarlo se olvida");
+    {
+        // Un tema ya abierto antes del mod (como los del Explorador): se
+        // reconoce por su clase, aunque no se vea en una ventana de menú.
+        GetThemeClass_t saved = g_getThemeClass;
+        g_getThemeClass = [](HTHEME t, LPWSTR out, int n) -> HRESULT {
+            wcsncpy(out, t == (HTHEME)(ULONG_PTR)0x3001 ? L"ImmersiveStart::Menu" : L"Button", n);
+            return S_OK;
+        };
+        HTHEME old = (HTHEME)(ULONG_PTR)0x3001, btn = (HTHEME)(ULONG_PTR)0x3002;
+        Check(ThemeClassIsMenu(old) == 1, "Un tema de menú abierto antes se reconoce por su clase");
+        Check(!MenuTheme(btn, mem, d) && g_themes.count(btn) && !g_themes[btn].menu,
+              "Y uno de botón queda anotado como que no es de menú");
+        g_getThemeClass = saved;
+    }
     Check(!IsStyledPart(1) && !IsStyledPart(7) && IsStyledPart(kPopupItem) && IsStyledPart(kPopupItemFocusable),
           "Solo las partes de los menús");
     Check(ItemTextColor(2, false) == RGB(28, 28, 30) && ItemTextColor(3, true) == RGB(140, 140, 146),

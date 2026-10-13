@@ -30,7 +30,7 @@ def framed(img, dark, radius=8):
 
 names = [("menu-claro", False), ("menu-oscuro", True), ("menu-claro-acento", False), ("menu-oscuro-acento", True)]
 cards = [framed(load(n), d) for n, d in names]
-wp = Image.open("fondo.png").convert("RGBA")
+wp = Image.open("../../herramientas/pruebas/fondo.png").convert("RGBA")
 W = sum(c.width for c in cards[:2]) + 30
 H = cards[0].height * 2 + 30
 sheet = wp.crop((400, 150, 400 + W, 150 + H)).copy()

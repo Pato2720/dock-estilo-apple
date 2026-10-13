@@ -2,7 +2,7 @@
 # Banco de pruebas de "Menús estilo Apple" en Wine: compila menu_muestra.exe
 # (que incluye el mod tal cual), comprueba la lógica y dibuja menús de
 # muestra en out/menu-*.bgra (a PNG con menus_png.py).
-# Requiere: wine64 y pip install ziglang.
+# Requiere: wine64 y pip install ziglang. Las muestras quedan en png/menus.png.
 cd "$(dirname "$0")"
 python3 -m ziglang c++ -target x86_64-windows-gnu -std=c++23 -O2 -municode \
   -DUNICODE -D_UNICODE -DWINVER=0x0A00 -U_WIN32_WINNT -D_WIN32_WINNT=0x0A00 \

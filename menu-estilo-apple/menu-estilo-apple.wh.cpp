@@ -2,7 +2,7 @@
 // @id              menu-estilo-apple
 // @name            Menús estilo Apple
 // @description     Menús del clic derecho y desplegables con el estilo de macOS: esquinas redondeadas, resaltado en pastilla, marcas vectoriales y los colores del Dock
-// @version         1.0
+// @version         1.1
 // @author          local
 // @include         *
 // @compilerOptions -luxtheme -ldwmapi -lgdi32 -luser32 -ladvapi32
@@ -14,8 +14,9 @@
 
 Cambia el aspecto de los menús del clic derecho y de los menús desplegables
 (Archivo, Edición…) en el escritorio, el Explorador y las aplicaciones, para
-que se vean como los de macOS. Hace juego con **Dock estilo Apple** y
-**Muesca superior estilo Apple**: usa los mismos colores que el menú del Dock.
+que se vean como los de macOS. Es un mod independiente: no necesita ningún
+otro. Usa los mismos colores que el menú de **Dock estilo Apple**, así que
+hacen juego si se usan juntos.
 
 ## Qué hace
 
@@ -35,17 +36,22 @@ que se vean como los de macOS. Hace juego con **Dock estilo Apple** y
 El menú nuevo de Windows 11 (el de iconos arriba) no es un menú clásico y no
 se puede restilar. Con **Menú clásico en el escritorio y el Explorador**
 activado, el mod hace que el Explorador use el menú completo de siempre (el
-de "Mostrar más opciones"), que sí toma este estilo. Puede hacer falta
-reiniciar el Explorador la primera vez. Al desactivar el mod o la opción,
-vuelve el menú de Windows 11.
+de "Mostrar más opciones"), que sí toma este estilo.
+
+**Después de activarlo, reinicia el Explorador una vez**: Administrador de
+tareas → Procesos → Explorador de Windows → Reiniciar (o cierra sesión y
+vuelve a entrar). Windows lee esa opción al arrancar el Explorador.
+
+Para volver al menú de Windows 11, apaga la opción (y reinicia el
+Explorador) antes de quitar el mod.
 
 ## Notas
 
 * Funciona con los menús que dibuja Windows (casi todas las apps de
   escritorio). Las apps que dibujan sus propios menús (Chrome, Firefox,
   Office, apps de la Tienda) no cambian.
-* Una app que ya estaba abierta al activar el mod puede necesitar volver a
-  abrirse para que todos sus menús cambien.
+* En el registro de Windhawk (Registros del mod) aparece "Primer menú con
+  estilo" en cada proceso donde ya se aplicó.
 */
 // ==/WindhawkModReadme==
 
@@ -69,7 +75,7 @@ vuelve el menú de Windows 11.
   $description: Archivo, Edición… en las apps clásicas
 - classicExplorer: true
   $name: Menú clásico en el escritorio y el Explorador
-  $description: El menú nuevo de Windows 11 no se puede restilar; con esto se usa el completo de siempre. Puede requerir reiniciar el Explorador
+  $description: El menú nuevo de Windows 11 no se puede restilar; con esto se usa el completo de siempre. Reinicia el Explorador después de cambiarla
 */
 // ==/WindhawkModSettings==
 
@@ -217,10 +223,11 @@ static bool AppsUseLightTheme() {
 // ---------------------------------------------------------------------------
 // Qué temas son de menú
 // ---------------------------------------------------------------------------
-// Se anotan al abrirse (OpenThemeData y compañía). Los que ya estaban
-// abiertos cuando llegó el mod se reconocen la primera vez que dibujan en
-// una ventana de menú, o mientras el hilo muestra un menú y el tema tiene
-// las partes de un menú.
+// Ante todo se le pregunta a uxtheme la clase del tema (GetThemeClass, que
+// solo se exporta por número). Así se reconocen también los temas que ya
+// estaban abiertos cuando llegó el mod, como los del Explorador. Si no se
+// puede, se anotan al abrirse (OpenThemeData y compañía) o al dibujar en
+// una ventana de menú.
 
 struct ThemeInfo {
     bool menu = false;
@@ -229,6 +236,10 @@ struct ThemeInfo {
 
 static SRWLOCK g_themeLock = SRWLOCK_INIT;
 static std::unordered_map<HTHEME, ThemeInfo> g_themes;
+
+using GetThemeClass_t = HRESULT(WINAPI*)(HTHEME, LPWSTR, int);
+static GetThemeClass_t g_getThemeClass = nullptr;  // uxtheme, ordinal 74
+static std::atomic<bool> g_loggedFirst{false};
 
 // "Menu", "ImmersiveStart::Menu", "DarkMode::Menu" o varias separadas por ';'.
 static bool IsMenuClassList(LPCWSTR list) {
@@ -276,10 +287,18 @@ static bool InMenuMode() {
     return GetGUIThreadInfo(GetCurrentThreadId(), &gi) && (gi.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE));
 }
 
+// Clase del tema según uxtheme: 1 menú, 0 otra, -1 no se sabe.
+static int ThemeClassIsMenu(HTHEME t) {
+    if (!g_getThemeClass) return -1;
+    wchar_t cls[256] = {};
+    if (FAILED(g_getThemeClass(t, cls, ARRAYSIZE(cls))) || !cls[0]) return -1;
+    return IsMenuClassList(cls) ? 1 : 0;
+}
+
 static bool LooksLikeMenuTheme(HTHEME t) {
     // Partes que solo un menú tiene juntas (la clase "Window" tiene muchas
     // más, de ahí la última).
-    return IsThemePartDefined(t, kPopupGutter, 0) && IsThemePartDefined(t, kPopupSeparator, 0) &&
+    return IsThemePartDefined(t, kPopupItem, 0) && IsThemePartDefined(t, kPopupSeparator, 0) &&
            IsThemePartDefined(t, kPopupSubmenu, 0) && !IsThemePartDefined(t, 30, 0);
 }
 
@@ -291,14 +310,18 @@ static bool MenuTheme(HTHEME t, HDC hdc, bool& dark) {
     ThemeInfo info = known ? it->second : ThemeInfo{};
     ReleaseSRWLockShared(&g_themeLock);
     if (!known) {
-        if (IsMenuWindow(WindowFromDC(hdc))) {
+        int byClass = ThemeClassIsMenu(t);
+        if (byClass >= 0) {
+            RememberTheme(t, byClass == 1);
+        } else if (IsMenuWindow(WindowFromDC(hdc)) || (InMenuMode() && LooksLikeMenuTheme(t))) {
             RememberTheme(t, true);
-        } else if (InMenuMode()) {
-            RememberTheme(t, LooksLikeMenuTheme(t));
         } else {
-            return false;  // sin decidir todavía: no se anota
+            return false;  // sin decidir: no se anota, se vuelve a mirar la próxima vez
         }
         return MenuTheme(t, hdc, dark);
+    }
+    if (info.menu && !g_loggedFirst.exchange(true)) {
+        Wh_Log(L"Primer menú con estilo (tema %s)", info.dark ? L"oscuro" : L"claro");
     }
     dark = info.dark;
     return info.menu;
@@ -753,17 +776,10 @@ static HRESULT WINAPI DrawThemeText_Hook(HTHEME t, HDC hdc, int part, int state,
 // Menú clásico en el Explorador
 // ---------------------------------------------------------------------------
 // Registrar vacío el componente del menú nuevo hace que el Explorador use el
-// menú completo de siempre. Solo lo hace el Explorador que tiene la barra de
-// tareas, y solo borra la clave si la creó el mod.
+// menú completo de siempre. Solo lo hace el Explorador, y solo borra la
+// clave si la creó el mod.
 
 static bool g_isExplorer = false;
-
-static bool OwnsTaskbar() {
-    HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
-    DWORD pid = 0;
-    if (tray) GetWindowThreadProcessId(tray, &pid);
-    return pid == GetCurrentProcessId();
-}
 
 static void ApplyClassicMenu(bool on) {
     if (!g_isExplorer) return;
@@ -824,15 +840,26 @@ BOOL Wh_ModInit() {
     Hook(ux, "OpenThemeDataEx", OpenThemeDataEx_Hook, &g_origOpenThemeDataEx);
     Hook(ux, "OpenThemeDataForDpi", OpenThemeDataForDpi_Hook, &g_origOpenThemeDataForDpi);
     Hook(ux, "CloseThemeData", CloseThemeData_Hook, &g_origCloseThemeData);
+    // GetThemeClass no tiene nombre exportado; antes de usarlo se comprueba
+    // con un tema conocido que de verdad devuelve la clase.
+    g_getThemeClass = (GetThemeClass_t)(void*)GetProcAddress(ux, MAKEINTRESOURCEA(74));
+    if (g_getThemeClass) {
+        HTHEME probe = OpenThemeData(nullptr, L"Menu");
+        wchar_t cls[64] = {};
+        bool works = probe && SUCCEEDED(g_getThemeClass(probe, cls, ARRAYSIZE(cls))) && IsMenuClassList(cls);
+        if (probe) CloseThemeData(probe);
+        if (!works) g_getThemeClass = nullptr;
+    }
+    Wh_Log(L"Menús estilo Apple listo (clase de tema: %s)", g_getThemeClass ? L"sí" : L"no");
     g_isExplorer = IsExplorerProcess();
     ApplyClassicMenu(g_classicExplorer);
     return TRUE;
 }
 
 void Wh_ModUninit() {
-    // Solo el Explorador del escritorio (no una ventana de carpeta en otro
-    // proceso) devuelve el menú de Windows 11.
-    if (g_isExplorer && OwnsTaskbar()) ApplyClassicMenu(false);
+    // La clave del menú clásico se deja: el mod también se descarga al
+    // reiniciar el Explorador, y quitarla ahí haría que el Explorador nuevo
+    // arranque con el menú de Windows 11. Se quita al apagar la opción.
 }
 
 void Wh_ModSettingsChanged() {
