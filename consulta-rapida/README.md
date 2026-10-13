@@ -54,8 +54,10 @@ Si se instaló con el navegador abierto, ciérralo y ábrelo otra vez.
 
 La API de Foundry ofrece todo su catálogo (también modelos que no tienes
 descargados), pero solo responde con los **cargados**. El mod pregunta a
-Foundry (`foundry model list --loaded` y `--cached`) y elige primero uno
-cargado; si no hay, uno descargado, que carga solo ("Cargando el modelo…").
+Foundry (`foundry model list --loaded` y `--cached`) y, si esa lista no
+nombra ninguno, le pregunta a la API con un pedido mínimo cuál responde.
+Elige primero uno cargado; si no hay, uno descargado, que carga solo
+("Cargando el modelo…").
 Nunca elige uno sin descargar. Entre los de NPU prefiere los rápidos (Phi)
 antes que los de razonamiento (DeepSeek-R1, que piensa mucho antes de
 contestar). Para usar uno en particular, pon su nombre en **Modelo** (los
@@ -98,7 +100,8 @@ más; si no consigue el texto, lo copia.
 acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
 corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
 vieja, y un servidor que, como Foundry, ofrece todo el catálogo pero solo
-responde con modelos cargados: 36 comprobaciones (JSON, respuestas por partes, elección del
+responde con modelos cargados (y listas con nombres, solo alias o vacías):
+38 comprobaciones (JSON, respuestas por partes, elección del
 modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
 pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa

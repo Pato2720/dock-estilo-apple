@@ -1,6 +1,8 @@
 // "foundry.exe" falso para el banco de pruebas: imita la versión nueva
 // ("foundry server status") o la vieja ("foundry service status") según la
-// variable FAKE_FOUNDRY (new | old | load | off), apuntando al servidor falso.
+// variable FAKE_FOUNDRY (new | old | load | alias | silent | off), apuntando
+// al servidor falso. "alias" escribe las listas solo con alias (phi-4-mini) y
+// "silent" no escribe nada en ellas.
 // En "load" imita a Foundry actual con modelos: «model list --loaded/--cached»
 // y «model load» (los cargados se anotan en cargado.txt, que también lee el
 // servidor falso). Cargar un modelo sin descargar se queda esperando una
@@ -11,6 +13,7 @@
 #include <cwchar>
 
 static const char* kCached[] = {"DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", "Phi-4-mini-instruct-openvino-npu:2"};
+static const char* kAlias[] = {"deepseek-r1-7b", "phi-4-mini"};
 
 int wmain(int argc, wchar_t** argv) {
     wchar_t mode[16] = L"new";
@@ -18,12 +21,32 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 3) return 1;
     bool server = !wcscmp(argv[1], L"server"), service = !wcscmp(argv[1], L"service");
     bool status = !wcscmp(argv[2], L"status");
-    if (!wcscmp(mode, L"load")) {
+    bool alias = !wcscmp(mode, L"alias"), silent = !wcscmp(mode, L"silent");
+    if (!wcscmp(mode, L"load") || alias || silent) {
         if (server && status) {
             printf("Foundry Local daemon: running\n  Local service: http://127.0.0.1:8766/v1\n");
             return 0;
         }
         if (!wcscmp(argv[1], L"model") && !wcscmp(argv[2], L"list") && argc > 3) {
+            if (silent) return 0;
+            if (alias) {
+                // Tabla con colores y solo alias.
+                printf("\x1b[1mAlias\x1b[0m        Device   Size\n");
+                if (!wcscmp(argv[3], L"--loaded")) {
+                    char buf[256] = {};
+                    FILE* f = fopen("cargado.txt", "rb");
+                    if (f) {
+                        fread(buf, 1, sizeof(buf) - 1, f);
+                        fclose(f);
+                    }
+                    for (int i = 0; i < 2; i++) {
+                        if (buf[0] && !strcmp(buf, kCached[i])) printf("\x1b[32m%s\x1b[0m   NPU   3.9 GB\n", kAlias[i]);
+                    }
+                } else {
+                    for (const char* a : kAlias) printf("\x1b[32m%s\x1b[0m   NPU   3.9 GB\n", a);
+                }
+                return 0;
+            }
             printf("Alias            Model ID\n");
             if (!wcscmp(argv[3], L"--loaded")) {
                 char buf[256] = {};
