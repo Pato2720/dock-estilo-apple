@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.3
+// @version         1.5
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -10,7 +10,7 @@
 // @include         brave.exe
 // @include         opera.exe
 // @include         vivaldi.exe
-// @compilerOptions -lwinhttp -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
+// @compilerOptions -lwinhttp -liphlpapi -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -48,6 +48,12 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 * Con una a tres palabras empieza definiendo; con más, explicando. Los
   botones cambian la acción y abajo puedes escribir tu propia pregunta.
 * Esc o un clic fuera la cierra. **Copiar** copia la respuesta.
+* **Nunca toma el foco**: ni el botón ni la ventanita activan nada, así
+  que la app en uso sigue en primer plano y no se pierde la selección. Al
+  tocar la caja de la pregunta, el mod lee el teclado él mismo (las teclas
+  no llegan a la página) hasta Enter, Esc o un clic fuera.
+* **Siempre encima** de todo mientras se ven, incluso de otras ventanas
+  "siempre visibles".
 
 ## Notas
 
@@ -119,6 +125,7 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <iphlpapi.h>
 #include <uiautomationclient.h>
 #include <winhttp.h>
 
@@ -148,9 +155,11 @@ enum : UINT {
     WM_APP_HIDEPILL,
     WM_APP_HOTKEY,
     WM_APP_SUBMIT,                  // Enter en la caja de la pregunta
+    WM_APP_CHAR,                    // wParam = letra escrita en la caja
+    WM_APP_EDITKEY,                 // wParam = tecla de edición (Retroceso, Enter…), lParam = con Ctrl
 };
 
-enum : UINT_PTR { TIMER_PILL_ASK = 1, TIMER_PILL_HIDE, TIMER_DOTS };
+enum : UINT_PTR { TIMER_PILL_ASK = 1, TIMER_PILL_HIDE, TIMER_DOTS, TIMER_CARET, TIMER_TOP };
 
 // Atributos de DWM de Windows 11 (no están en todos los encabezados).
 constexpr DWORD kDwmDarkMode = 20, kDwmCornerPreference = 33, kDwmBorderColor = 34;
@@ -793,10 +802,10 @@ static std::wstring ProbeLoadedModel(const std::wstring& base, std::vector<std::
                      [](const std::wstring& a, const std::wstring& b) { return ModelScore(a) > ModelScore(b); });
     int tries = 0;
     for (auto& id : ids) {
-        if (++tries > 16 || g_unloading) break;
+        if (++tries > 12 || g_unloading) break;
         std::string body = "{\"model\":" + JsonString(ToUtf8(id)) +
                            ",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}";
-        HttpResult r = HttpRequest(base + L"/chat/completions", "POST", body, key, nullptr, 60000);
+        HttpResult r = HttpRequest(base + L"/chat/completions", "POST", body, key, nullptr, 20000);
         if (!r.error.empty()) break;  // el servicio no responde: no tiene caso seguir
         if (r.status == 200) return id;
     }
@@ -816,11 +825,11 @@ static bool LoadFoundryModel(const std::wstring& base, const std::wstring& model
     HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/load/" + UrlPart(model), "GET", "", key, nullptr, 180000);
     std::string out;
     if (!(r.error.empty() && r.status == 200)) {
-        RunFoundry(L"model load \"" + model + L"\"", 180000, out, nullptr);
+        RunFoundry(L"model load \"" + model + L"\"", 90000, out, nullptr);
         Wh_Log(L"foundry model load %s: %s", model.c_str(), FromUtf8(out.substr(0, 300)).c_str());
     }
     std::string loaded;
-    RunFoundry(L"model list --loaded", 30000, loaded, nullptr);
+    RunFoundry(L"model list --loaded", 10000, loaded, nullptr);
     return MentionsModel(loaded, model) || !FoundryLoadedModels(base, key).empty();
 }
 
@@ -835,42 +844,117 @@ static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& o
            RunCapture(L"\"" + std::wstring(local) + L"\" " + args, timeoutMs, out, exitCode);
 }
 
-// Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Las
-// versiones nuevas usan "foundry server …"; las de antes, "foundry service …".
-// Si no está en marcha, lo arranca.
-static bool FindFoundry(std::wstring& url, std::wstring& error) {
+using SayFn = std::function<void(const std::wstring&)>;
+
+// Puertos en los que escuchan los procesos de Foundry Local (sin correr su
+// comando: desde el navegador, «foundry …» puede quedarse colgado).
+static std::vector<USHORT> FoundryListenPorts() {
+    std::vector<USHORT> ports;
+    auto isFoundry = [](DWORD pid) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return false;
+        wchar_t path[MAX_PATH] = {};
+        DWORD n = ARRAYSIZE(path);
+        bool ok = QueryFullProcessImageNameW(h, 0, path, &n);
+        CloseHandle(h);
+        if (!ok) return false;
+        CharLowerBuffW(path, n);
+        const wchar_t* name = wcsrchr(path, L'\\');
+        name = name ? name + 1 : path;
+        return wcsstr(name, L"foundry") != nullptr || wcsstr(name, L"inference.service") != nullptr;
+    };
+    auto add = [&](DWORD port) {
+        USHORT p = (USHORT)(((port & 0xFF) << 8) | ((port >> 8) & 0xFF));  // orden de red
+        if (p && std::find(ports.begin(), ports.end(), p) == ports.end()) ports.push_back(p);
+    };
+    constexpr ULONG kInet = 2, kInet6 = 23;  // AF_INET, AF_INET6 (sin incluir Winsock)
+    for (ULONG family : {kInet, kInet6}) {
+        DWORD size = 0;
+        GetExtendedTcpTable(nullptr, &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        if (!size) continue;
+        std::vector<BYTE> buf(size + 1024);
+        size = (DWORD)buf.size();
+        if (GetExtendedTcpTable(buf.data(), &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) continue;
+        if (family == kInet) {
+            auto* t = (MIB_TCPTABLE_OWNER_PID*)buf.data();
+            for (DWORD i = 0; i < t->dwNumEntries; i++) {
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+            }
+        } else {
+            auto* t = (MIB_TCP6TABLE_OWNER_PID*)buf.data();
+            for (DWORD i = 0; i < t->dwNumEntries; i++) {
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+            }
+        }
+    }
+    return ports;
+}
+
+// ¿Responde ahí una API compatible con OpenAI (/v1/models)?
+static bool AnswersModels(const std::wstring& root) {
+    HttpResult r = HttpRequest(root + L"/v1/models", "GET", "", L"", nullptr, 3000);
+    return r.error.empty() && r.status == 200 && r.body.find("\"data\"") != std::string::npos;
+}
+
+// Para el banco de pruebas: Wine no dice de qué proceso es cada puerto.
+static std::vector<USHORT> (*g_foundryPorts)() = FoundryListenPorts;
+
+static std::wstring FoundryByPort() {
+    for (USHORT port : g_foundryPorts()) {
+        for (const wchar_t* host : {L"http://127.0.0.1:", L"http://localhost:"}) {
+            std::wstring root = host + std::to_wstring(port);
+            if (AnswersModels(root)) return root;
+        }
+    }
+    return L"";
+}
+
+// Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Primero
+// por los puertos de su proceso; si no, con su comando (las versiones nuevas
+// usan «foundry server …»; las de antes, «foundry service …»), con tiempos
+// cortos. Si no está en marcha, intenta arrancarlo.
+static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say) {
+    say(L"Buscando Foundry Local");
+    ULONGLONG t0 = GetTickCount64();
+    url = FoundryByPort();
+    Wh_Log(L"Foundry por puertos: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
+    if (!url.empty()) return true;
     std::string out;
-    if (!RunFoundry(L"server status", 15000, out)) {
+    if (!RunFoundry(L"server status", 8000, out)) {
         error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal», "
                 L"descarga un modelo con «foundry run phi-4-mini» y vuelve a abrir el navegador.";
         return false;
     }
     url = FirstLocalUrl(out);
-    for (const wchar_t* cmd : {L"service status", L"server start", L"service start"}) {
-        if (!url.empty()) break;
-        bool start = wcsstr(cmd, L"start") != nullptr;
-        std::string more;
-        RunFoundry(cmd, start ? 60000 : 15000, more);
-        if (start) {
-            more.clear();
-            RunFoundry(L"server status", 15000, more);
-            if (FirstLocalUrl(more).empty()) RunFoundry(L"service status", 15000, more);
-        }
-        url = FirstLocalUrl(more);
-        out += more;
+    if (url.empty()) {
+        RunFoundry(L"service status", 8000, out);
+        url = FirstLocalUrl(out);
     }
     if (url.empty()) {
-        std::wstring said = FromUtf8(out.substr(0, 300));
+        say(L"Arrancando Foundry Local");
+        std::string more;
+        RunFoundry(L"server start", 20000, more);
+        url = FoundryByPort();
+        if (url.empty()) {
+            RunFoundry(L"server status", 8000, more);
+            url = FirstLocalUrl(more);
+        }
+        out += more;
+    }
+    Wh_Log(L"Foundry por su comando: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
+    if (url.empty()) {
+        std::wstring said = FromUtf8(PlainLower(out).substr(0, 300));
         Wh_Log(L"Foundry Local no dio su dirección. Respondió: %s", said.c_str());
-        error = L"Foundry Local no está en marcha y no se pudo arrancar. En una terminal: «foundry server start» "
-                L"y «foundry run phi-4-mini». Si sigue, pon la dirección de «foundry server status» en la "
-                L"configuración del mod.";
+        error = L"No se encontró Foundry Local en marcha. En una terminal: «foundry server start» y "
+                L"«foundry model load phi-4-mini». Si sigue, pon su dirección (la de «foundry server status») "
+                L"en la configuración del mod.";
         return false;
     }
     return true;
 }
 
-static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error) {
+static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error,
+                           const SayFn& say = [](const std::wstring&) {}) {
     std::wstring key = std::to_wstring((int)st.provider) + L"|" + st.endpoint + L"|" + st.model;
     AcquireSRWLockShared(&g_backendLock);
     bool cached = !g_backend.base.empty() && key == g_backendKey;
@@ -888,7 +972,7 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
     if (b.base.empty()) {
         // Foundry Local cambia de puerto en cada arranque: se le pregunta.
         std::wstring url;
-        if (!FindFoundry(url, error)) return false;
+        if (!FindFoundry(url, error, say)) return false;
         b.base = url + L"/v1";
     } else if (b.base.size() < 3 || b.base.compare(b.base.size() - 3, 3, L"/v1") != 0) {
         if (b.base.find(L"/v1/") == std::wstring::npos && b.base.find(L"/openai") == std::wstring::npos) {
@@ -908,54 +992,42 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
         }
         std::vector<std::wstring> ids = JsonIds(r.body);
         if (st.provider == Provider::Foundry) {
-            // La API ofrece todo el catálogo: se elige entre lo cargado y, si
-            // no hay, lo descargado (nunca algo que habría que descargar).
+            // La API ofrece todo el catálogo, pero solo responde con lo
+            // cargado. Primero se le pregunta a ella (rápido: a un modelo sin
+            // cargar responde con un error al instante); los comandos de
+            // Foundry, que pueden colgarse desde el navegador, después.
+            say(L"Buscando el modelo cargado");
+            ULONGLONG t0 = GetTickCount64();
             std::vector<std::wstring> loaded = FoundryLoadedModels(b.base, st.apiKey);
-            // Solo cuenta lo que escribe un comando que terminó bien (las
-            // versiones viejas no tienen estas opciones).
-            auto list = [](const wchar_t* args, std::string& txt) {
-                std::string out;
-                DWORD code = 1;
-                bool ok = RunFoundry(args, 30000, out, &code) && code == 0 && !Trim(FromUtf8(out)).empty();
-                Wh_Log(L"foundry %s (%s): %s", args, ok ? L"bien" : L"falló",
-                       FromUtf8(PlainLower(out).substr(0, 600)).c_str());
-                if (ok) txt += out;
-                return ok;
-            };
-            std::string loadedTxt, cachedTxt;
-            bool cliKnows = list(L"model list --loaded", loadedTxt);
-            for (auto& id : ModelsIn(ids, loadedTxt)) loaded.push_back(id);
-            if (loaded.empty()) {
-                cliKnows = list(L"model list --cached", cachedTxt) || cliKnows;
-                if (ModelsIn(ids, cachedTxt).empty()) cliKnows = list(L"cache list", cachedTxt) || cliKnows;
-            }
-            std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
-            // Si el comando no nombró ninguno cargado, se le pregunta a la API.
-            std::wstring probed = loaded.empty() ? ProbeLoadedModel(b.base, cached.empty() ? ids : cached, st.apiKey)
-                                                 : L"";
-            if (probed.empty() && loaded.empty() && !cached.empty()) {
-                // Los descargados no respondieron: a lo mejor hay otro cargado.
-                std::vector<std::wstring> rest;
-                for (auto& id : ids) {
-                    if (std::find(cached.begin(), cached.end(), id) == cached.end()) rest.push_back(id);
-                }
-                probed = ProbeLoadedModel(b.base, rest, st.apiKey);
-            }
-            Wh_Log(L"Foundry: %d modelos en la API, %d cargados, %d descargados, respondió: %s", (int)ids.size(),
-                   (int)loaded.size(), (int)cached.size(), probed.empty() ? L"ninguno" : probed.c_str());
+            std::wstring probed = loaded.empty() ? ProbeLoadedModel(b.base, ids, st.apiKey) : L"";
+            Wh_Log(L"Foundry: %d modelos en la API, cargado: %s (%llu ms)", (int)ids.size(),
+                   !loaded.empty() ? loaded.front().c_str() : probed.empty() ? L"ninguno" : probed.c_str(),
+                   GetTickCount64() - t0);
             if (!loaded.empty()) {
                 b.model = PickModel(loaded);
             } else if (!probed.empty()) {
                 b.model = probed;
-            } else if (!cached.empty()) {
-                b.model = PickModel(cached);  // se cargará al preguntar
-            } else if (!cliKnows) {
-                b.model = PickModel(ids);  // el comando no sabe decirlo: lo que ofrezca la API
             } else {
-                error = L"No se encontró ningún modelo cargado ni descargado en Foundry Local. Carga uno con "
-                        L"«foundry model load phi-4-mini» o pon su nombre en Modelo, en la configuración del mod "
-                        L"(en Registros del mod, en Windhawk, está lo que respondió Foundry).";
-                return false;
+                // Ninguno cargado: uno descargado (se cargará al preguntar).
+                auto list = [](const wchar_t* args, std::string& txt) {
+                    std::string out;
+                    DWORD code = 1;
+                    ULONGLONG t = GetTickCount64();
+                    bool ok = RunFoundry(args, 10000, out, &code) && code == 0 && !Trim(FromUtf8(out)).empty();
+                    Wh_Log(L"foundry %s (%s, %llu ms): %s", args, ok ? L"bien" : L"falló", GetTickCount64() - t,
+                           FromUtf8(PlainLower(out).substr(0, 600)).c_str());
+                    if (ok) txt += out;
+                    return ok;
+                };
+                std::string cachedTxt;
+                if (!list(L"model list --cached", cachedTxt)) list(L"cache list", cachedTxt);
+                std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
+                if (cached.empty()) {
+                    error = L"No hay ningún modelo cargado en Foundry Local. Carga uno con «foundry model load "
+                            L"phi-4-mini» y vuelve a probar, o pon su nombre en Modelo, en la configuración del mod.";
+                    return false;
+                }
+                b.model = PickModel(cached);
             }
         } else {
             b.model = PickModel(ids);
@@ -1063,11 +1135,14 @@ static DWORD WINAPI AskThread(LPVOID param) {
     auto current = [&] { return g_askGen.load() == job->gen && !g_unloading; };
     Backend b;
     std::wstring error;
-    if (!ResolveBackend(st, b, error)) {
+    SayFn say = [&](const std::wstring& what) {
+        if (current()) UpdateAnswer([&](AnswerState& a) { a.status = what; });
+    };
+    if (!ResolveBackend(st, b, error, say)) {
         if (current()) UpdateAnswer([&](AnswerState& a) { a.error = error; a.done = true; a.waiting = false; });
         return 0;
     }
-    if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
+    if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; a.status.clear(); });
     SseReader sse;
     std::string whole;  // por si el servicio no responde por partes
     auto onText = [&](const std::wstring& t) {
@@ -1096,7 +1171,7 @@ static DWORD WINAPI AskThread(LPVOID param) {
     // puerto): se busca de nuevo y se reintenta una vez.
     if (!r.error.empty() && r.status == 0 && foundry && st.endpoint.empty()) {
         ForgetBackend();
-        if (ResolveBackend(st, b, error) && current()) {
+        if (ResolveBackend(st, b, error, say) && current()) {
             UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
             r = send();
             if (!current()) return 0;
@@ -1583,6 +1658,7 @@ static void ShowPill(POINT pt, HWND owner) {
     g_pillPt = pt;
     g_pillOwner = owner;
     SetTimer(g_host, TIMER_PILL_HIDE, 4000, nullptr);
+    SetTimer(g_host, TIMER_TOP, 250, nullptr);
 }
 
 static void ReadSelection(POINT pt, HWND owner) {
@@ -1612,14 +1688,15 @@ static LRESULT CALLBACK PillWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 // ---------------------------------------------------------------------------
 
 struct Popup {
-    HWND wnd = nullptr, edit = nullptr, owner = nullptr;
+    HWND wnd = nullptr, owner = nullptr;
+    std::wstring query;    // la pregunta que se va escribiendo
+    bool caretOn = true;
     std::wstring text;  // lo seleccionado
     Action action = Action::Explain;
     bool hasAction = false;
     float s = 1;
     Colors c{};
     HFONT font = nullptr, fontSmall = nullptr, fontBold = nullptr;
-    HBRUSH inputBrush = nullptr;
     int w = 0, h = 0;
     RECT quote{}, chips[4]{}, answer{}, input{}, footer{}, copy{}, close{};
     int hotChip = -1;  // 0..3 botones, 4 copiar, 5 cerrar
@@ -1635,9 +1712,12 @@ static void FreePopupGdi() {
         if (*f) DeleteObject(*f);
         *f = nullptr;
     }
-    if (g_pop.inputBrush) DeleteObject(g_pop.inputBrush);
-    g_pop.inputBrush = nullptr;
 }
+
+// Mientras se escribe en la caja, el teclado lo lee el mod (con su gancho)
+// sin activar la ventanita: la app en uso sigue en primer plano. Solo lo
+// usan el hilo de la interfaz y sus ganchos, que corren en él.
+static bool g_typing = false;
 
 static int TextHeight(HFONT font, const std::wstring& t, int width) {
     if (t.empty() || width <= 0) return 0;
@@ -1708,11 +1788,6 @@ static void LayoutPopup() {
     y += S(18) + S(12);
     g_pop.w = W;
     g_pop.h = y;
-    if (g_pop.edit) {
-        int ih = S(20);
-        MoveWindow(g_pop.edit, g_pop.input.left + S(12), (g_pop.input.top + g_pop.input.bottom - ih) / 2,
-                   g_pop.input.right - g_pop.input.left - S(24), ih, TRUE);
-    }
 }
 
 static void PaintPopup(HDC dc) {
@@ -1784,8 +1859,41 @@ static void PaintPopup(HDC dc) {
             }
         }
     }
-    // Caja de la pregunta.
-    FillRoundSolid(dc, g_pop.input, 10 * s, c.input, c.bg, c.inputBorder);
+    // Caja de la pregunta (dibujada aquí: no es un control de Windows, que
+    // necesitaría el foco).
+    FillRoundSolid(dc, g_pop.input, 10 * s, c.input, c.bg, g_typing ? Mix(c.bg, c.text, 0.45f) : c.inputBorder);
+    {
+        SelectObject(dc, g_pop.font);
+        int padX = (int)std::lround(12 * s), caretW = std::max(1, (int)std::lround(1.5 * s));
+        RECT ir{g_pop.input.left + padX, g_pop.input.top, g_pop.input.right - padX, g_pop.input.bottom};
+        int saved = SaveDC(dc);
+        IntersectClipRect(dc, ir.left, ir.top, ir.right, ir.bottom);
+        int caretX = ir.left;
+        if (g_pop.query.empty()) {
+            SetTextColor(dc, c.dim);
+            const wchar_t* cue = g_typing ? L"Escribe tu pregunta y pulsa Enter" : L"Pregunta algo sobre el texto…";
+            DrawTextW(dc, cue, -1, &ir, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        } else {
+            SIZE ts{};
+            GetTextExtentPoint32W(dc, g_pop.query.c_str(), (int)g_pop.query.size(), &ts);
+            // Si no cabe, se ve el final (donde se escribe).
+            int x = ts.cx > ir.right - ir.left - 2 * caretW ? ir.right - 2 * caretW - ts.cx : ir.left;
+            SetTextColor(dc, c.text);
+            RECT tr{x, ir.top, x + ts.cx + 4, ir.bottom};
+            DrawTextW(dc, g_pop.query.c_str(), (int)g_pop.query.size(), &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            caretX = x + ts.cx + 1;
+        }
+        if (g_typing && g_pop.caretOn) {
+            TEXTMETRICW tm{};
+            GetTextMetricsW(dc, &tm);
+            int cy = (ir.top + ir.bottom) / 2;
+            RECT caret{caretX, cy - tm.tmHeight / 2, caretX + caretW, cy + tm.tmHeight / 2};
+            HBRUSH cb = CreateSolidBrush(c.text);
+            FillRect(dc, &caret, cb);
+            DeleteObject(cb);
+        }
+        RestoreDC(dc, saved);
+    }
     // Pie: servicio y modelo; Copiar.
     SelectObject(dc, g_pop.fontSmall);
     SetTextColor(dc, c.dim);
@@ -1830,24 +1938,41 @@ static void ClosePopup() {
     ++g_askGen;
     AbortRequest();
     KillTimer(g_pop.wnd, TIMER_DOTS);
-    ShowWindow(g_pop.wnd, SW_HIDE);
-    if (g_pop.owner && IsWindow(g_pop.owner)) SetForegroundWindow(g_pop.owner);
+    KillTimer(g_pop.wnd, TIMER_CARET);
+    g_typing = false;
+    ShowWindow(g_pop.wnd, SW_HIDE);  // nunca tuvo el foco: no hay que devolverlo
 }
 
-static WNDPROC g_editProc = nullptr;
+static void SetTyping(bool on) {
+    if (g_typing == on) return;
+    g_typing = on;
+    g_pop.caretOn = true;
+    if (on) SetTimer(g_pop.wnd, TIMER_CARET, 530, nullptr);
+    else KillTimer(g_pop.wnd, TIMER_CARET);
+    InvalidateRect(g_pop.wnd, nullptr, FALSE);
+}
 
-// Enter manda la pregunta; Esc cierra.
-static LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_KEYDOWN && wParam == VK_RETURN) {
-        PostMessageW(GetParent(hwnd), WM_APP_SUBMIT, 0, 0);
-        return 0;
+static void SubmitQuery() {
+    std::wstring q = Trim(g_pop.query);
+    if (q.empty()) return;
+    g_pop.query.clear();
+    SetTyping(false);  // el teclado vuelve a la app en uso
+    RunAction(Action::Question, q);
+}
+
+static void PasteIntoQuery() {
+    if (!OpenClipboard(g_pop.wnd)) return;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* p = (const wchar_t*)GlobalLock(h)) {
+            std::wstring t = p;
+            GlobalUnlock(h);
+            for (auto& ch : t) {
+                if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' ';
+            }
+            g_pop.query += t.substr(0, 1000 - std::min<size_t>(1000, g_pop.query.size()));
+        }
     }
-    if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
-        PostMessageW(GetParent(hwnd), WM_CLOSE, 0, 0);
-        return 0;
-    }
-    if (msg == WM_CHAR && (wParam == L'\r' || wParam == 27)) return 0;  // sin pitido
-    return CallWindowProcW(g_editProc, hwnd, msg, wParam, lParam);
+    CloseClipboard();
 }
 
 static void CopyAnswer() {
@@ -1894,12 +2019,8 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         case WM_ERASEBKGND:
             return 1;
-        case WM_CTLCOLOREDIT: {
-            HDC dc = (HDC)wParam;
-            SetTextColor(dc, g_pop.c.text);
-            SetBkColor(dc, g_pop.c.input);
-            return (LRESULT)g_pop.inputBrush;
-        }
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;  // la app en uso sigue en primer plano
         case WM_MOUSEMOVE: {
             POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             int hot = PopupHit(pt);
@@ -1916,13 +2037,20 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_SETCURSOR:
-            if (LOWORD(lParam) == HTCLIENT && g_pop.hotChip >= 0) {
-                SetCursor(LoadCursorW(nullptr, IDC_HAND));
-                return TRUE;
+            if (LOWORD(lParam) == HTCLIENT) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+                if (g_pop.hotChip >= 0 || PtInRect(&g_pop.input, pt)) {
+                    SetCursor(LoadCursorW(nullptr, g_pop.hotChip >= 0 ? IDC_HAND : IDC_IBEAM));
+                    return TRUE;
+                }
             }
             break;
         case WM_LBUTTONUP: {
-            int hit = PopupHit(POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            SetTyping(PtInRect(&g_pop.input, pt) != FALSE);
+            int hit = PopupHit(pt);
             if (hit >= 0 && hit < 4) RunAction((Action)hit);
             else if (hit == 4) CopyAnswer();
             else if (hit == 5) ClosePopup();
@@ -1941,32 +2069,47 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             ResizePopup();
             return 0;
         }
-        case WM_APP_SUBMIT: {
-            wchar_t buf[1024] = {};
-            GetWindowTextW(g_pop.edit, buf, ARRAYSIZE(buf));
-            std::wstring q = Trim(buf);
-            if (!q.empty()) {
-                SetWindowTextW(g_pop.edit, L"");
-                RunAction(Action::Question, q);
-            }
+        case WM_APP_SUBMIT:
+            SubmitQuery();
             return 0;
-        }
+        case WM_APP_CHAR:
+            if (g_pop.query.size() < 1000) g_pop.query += (wchar_t)wParam;
+            g_pop.caretOn = true;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_APP_EDITKEY:
+            switch (wParam) {
+                case VK_BACK:
+                    if (lParam) {  // Ctrl+Retroceso: la última palabra
+                        while (!g_pop.query.empty() && g_pop.query.back() == L' ') g_pop.query.pop_back();
+                        while (!g_pop.query.empty() && g_pop.query.back() != L' ') g_pop.query.pop_back();
+                    } else if (!g_pop.query.empty()) {
+                        g_pop.query.pop_back();
+                    }
+                    break;
+                case VK_RETURN:
+                    SubmitQuery();
+                    return 0;
+                case VK_ESCAPE:
+                    SetTyping(false);
+                    return 0;
+                case 'V':
+                    PasteIntoQuery();
+                    break;
+                case VK_DELETE:
+                    if (lParam) g_pop.query.clear();
+                    break;
+            }
+            g_pop.caretOn = true;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
         case WM_TIMER:
             if (wParam == TIMER_DOTS) {
                 g_pop.dots++;
                 InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            return 0;
-        case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) ClosePopup();
-            return 0;
-        case WM_ACTIVATE:
-            if (LOWORD(wParam) == WA_INACTIVE) {
-                // Se cierra al hacer clic fuera (salvo hacia su propia caja).
-                HWND to = (HWND)lParam;
-                if (to != g_pop.edit) ClosePopup();
-            } else if (g_pop.edit) {
-                SetFocus(g_pop.edit);
+            } else if (wParam == TIMER_CARET) {
+                g_pop.caretOn = !g_pop.caretOn;
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         case WM_CLOSE:
@@ -1985,8 +2128,9 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     g_pop.font = MakeFont(14 * g_pop.s, FW_NORMAL);
     g_pop.fontSmall = MakeFont(12.5f * g_pop.s, FW_NORMAL);
     g_pop.fontBold = MakeFont(14 * g_pop.s, FW_SEMIBOLD);
-    g_pop.inputBrush = CreateSolidBrush(g_pop.c.input);
     g_pop.text = sel;
+    g_pop.query.clear();
+    g_typing = false;
     g_pop.owner = owner;
     g_pop.hasAction = false;
     g_pop.hotChip = -1;
@@ -2000,13 +2144,12 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
         a.label = label;
     });
     if (!g_pop.wnd) {
-        g_pop.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPopupClass, L"Consulta rápida", WS_POPUP, 0, 0, 1,
-                                    1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        // Nunca se activa: ni al aparecer ni al tocarla.
+        g_pop.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kPopupClass,
+                                    L"Consulta rápida", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
+                                    GetModuleHandleW(nullptr), nullptr);
         if (!g_pop.wnd) return;
         g_popup = g_pop.wnd;
-        g_pop.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 10, 10, g_pop.wnd,
-                                     nullptr, GetModuleHandleW(nullptr), nullptr);
-        g_editProc = (WNDPROC)SetWindowLongPtrW(g_pop.edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
         DWORD corner = kCornerRound;
         DwmSetWindowAttribute(g_pop.wnd, kDwmCornerPreference, &corner, sizeof(corner));
     }
@@ -2014,9 +2157,6 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     DwmSetWindowAttribute(g_pop.wnd, kDwmDarkMode, &dark, sizeof(dark));
     COLORREF border = Mix(g_pop.c.bg, g_pop.c.text, g_pop.c.dark ? 0.2f : 0.18f);
     DwmSetWindowAttribute(g_pop.wnd, kDwmBorderColor, &border, sizeof(border));
-    SendMessageW(g_pop.edit, WM_SETFONT, (WPARAM)g_pop.font, TRUE);
-    SendMessageW(g_pop.edit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Pregunta algo sobre el texto…");
-    SetWindowTextW(g_pop.edit, L"");
     // Al lado de la selección (donde estaba el mouse), sin salirse.
     LayoutPopup();
     MONITORINFO mi{sizeof(mi)};
@@ -2024,9 +2164,8 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     int x = std::clamp<int>(pt.x - g_pop.w / 4, mi.rcWork.left + 8, mi.rcWork.right - g_pop.w - 8);
     int y = pt.y + (int)std::lround(18 * g_pop.s);
     if (y + g_pop.h > mi.rcWork.bottom - 8) y = std::max<int>(mi.rcWork.top + 8, pt.y - g_pop.h - (int)std::lround(18 * g_pop.s));
-    SetWindowPos(g_pop.wnd, HWND_TOPMOST, x, y, g_pop.w, g_pop.h, SWP_SHOWWINDOW);
-    SetForegroundWindow(g_pop.wnd);
-    SetFocus(g_pop.edit);
+    SetWindowPos(g_pop.wnd, HWND_TOPMOST, x, y, g_pop.w, g_pop.h, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    SetTimer(g_host, TIMER_TOP, 250, nullptr);
     DefaultAction da = st.defaultAction;
     if (da == DefaultAction::Auto) da = CountWords(sel) <= 3 ? DefaultAction::Define : DefaultAction::Explain;
     if (da == DefaultAction::Define) RunAction(Action::Define);
@@ -2058,9 +2197,28 @@ static bool IsPageContent(POINT pt) {
     return !wcscmp(cls, L"Chrome_RenderWidgetHostHWND") || !wcscmp(cls, L"MozillaWindowClass");
 }
 
+static bool PopupShown() { return g_pop.wnd && IsWindowVisible(g_pop.wnd); }
+
+static bool InPopup(POINT pt) {
+    RECT r{};
+    return PopupShown() && GetWindowRect(g_pop.wnd, &r) && PtInRect(&r, pt);
+}
+
 static LRESULT CALLBACK MouseHook(int code, WPARAM w, LPARAM l) {
     if (code == HC_ACTION) {
         auto* m = (MSLLHOOKSTRUCT*)l;
+        // La ventanita no toma el foco: un clic fuera la cierra y la rueda
+        // encima la desplaza (sin mover la página de atrás).
+        if (PopupShown()) {
+            bool inside = InPopup(m->pt);
+            if (!inside && (w == WM_LBUTTONDOWN || w == WM_RBUTTONDOWN || w == WM_MBUTTONDOWN)) {
+                PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+            } else if (inside && w == WM_MOUSEWHEEL) {
+                PostMessageW(g_pop.wnd, WM_MOUSEWHEEL, MAKEWPARAM(0, HIWORD(m->mouseData)),
+                             MAKELPARAM(m->pt.x, m->pt.y));
+                return 1;
+            }
+        }
         switch (w) {
             case WM_LBUTTONDOWN:
                 g_downPt = m->pt;
@@ -2105,7 +2263,60 @@ static bool HotkeyMatches(Hotkey hk, DWORD vk) {
 
 static std::atomic<int> g_hotkey{(int)Hotkey::CtrlShiftSpace};
 
+static bool IsModifierKey(DWORD vk) {
+    switch (vk) {
+        case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT: case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+        case VK_MENU: case VK_LMENU: case VK_RMENU: case VK_CAPITAL:
+            return true;
+    }
+    return false;
+}
+
+// Una tecla mientras se escribe en la caja: letras (con la distribución de
+// teclado de la app en uso, mayúsculas, AltGr y acentos) o teclas de edición.
+static void TypeKey(const KBDLLHOOKSTRUCT* k) {
+    bool ctrl = GetAsyncKeyState(VK_CONTROL) & 0x8000, alt = GetAsyncKeyState(VK_MENU) & 0x8000;
+    bool shift = GetAsyncKeyState(VK_SHIFT) & 0x8000;
+    DWORD vk = k->vkCode;
+    if (vk == VK_PACKET) {  // texto enviado como Unicode (teclados en pantalla, dictado)
+        PostMessageW(g_pop.wnd, WM_APP_CHAR, k->scanCode, 0);
+        return;
+    }
+    if (vk == VK_BACK || vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_DELETE || (ctrl && !alt && vk == 'V')) {
+        PostMessageW(g_pop.wnd, WM_APP_EDITKEY, vk, ctrl && !alt);
+        return;
+    }
+    if (ctrl && !alt) return;  // otros atajos con Ctrl: nada
+    BYTE ks[256] = {};
+    if (shift) ks[VK_SHIFT] = ks[VK_LSHIFT] = 0x80;
+    if (ctrl && alt) ks[VK_CONTROL] = ks[VK_MENU] = ks[VK_LCONTROL] = ks[VK_RMENU] = 0x80;  // AltGr
+    if (GetKeyState(VK_CAPITAL) & 1) ks[VK_CAPITAL] = 0x01;
+    HWND fg = GetForegroundWindow();
+    HKL layout = GetKeyboardLayout(fg ? GetWindowThreadProcessId(fg, nullptr) : 0);
+    wchar_t buf[8] = {};
+    int n = ToUnicodeEx(vk, k->scanCode, ks, buf, ARRAYSIZE(buf), 0, layout);
+    for (int i = 0; i < n; i++) {  // n < 0: tecla muerta (acento), espera la siguiente
+        if (buf[i] >= 0x20) PostMessageW(g_pop.wnd, WM_APP_CHAR, buf[i], 0);
+    }
+}
+
 static LRESULT CALLBACK KeyHook(int code, WPARAM w, LPARAM l) {
+    if (code == HC_ACTION && PopupShown()) {
+        auto* k = (KBDLLHOOKSTRUCT*)l;
+        bool down = w == WM_KEYDOWN || w == WM_SYSKEYDOWN;
+        bool alt = GetAsyncKeyState(VK_MENU) & 0x8000;
+        bool system = k->vkCode == VK_LWIN || k->vkCode == VK_RWIN || (alt && (k->vkCode == VK_TAB || k->vkCode == VK_F4));
+        if (g_typing && !OurBrowserInFront()) {
+            g_typing = false;  // se cambió de app: el teclado vuelve a ella
+            InvalidateRect(g_pop.wnd, nullptr, FALSE);
+        } else if (g_typing && !IsModifierKey(k->vkCode) && !system) {
+            if (down) TypeKey(k);
+            return 1;  // la tecla es de la caja, no de la página
+        } else if (!g_typing && down && k->vkCode == VK_ESCAPE && OurBrowserInFront()) {
+            PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+            return 1;
+        }
+    }
     if (code == HC_ACTION && (w == WM_KEYDOWN || w == WM_SYSKEYDOWN)) {
         auto* k = (KBDLLHOOKSTRUCT*)l;
         if (k->vkCode != VK_SHIFT && k->vkCode != VK_LSHIFT && k->vkCode != VK_RSHIFT && k->vkCode != VK_CONTROL &&
@@ -2168,6 +2379,18 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (OurBrowserInFront()) ShowPill(g_pendingPt, g_pendingOwner);
             } else if (wParam == TIMER_PILL_HIDE) {
                 HidePill();
+            } else if (wParam == TIMER_TOP) {
+                // Siempre encima de todo mientras se ven (otras ventanas
+                // "siempre visibles" podrían taparlas), sin activarlas.
+                bool any = false;
+                for (HWND h : {g_pill, g_pop.wnd}) {
+                    if (h && IsWindowVisible(h)) {
+                        any = true;
+                        SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
+                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    }
+                }
+                if (!any) KillTimer(hwnd, TIMER_TOP);
             }
             return 0;
     }
@@ -2228,7 +2451,7 @@ static DWORD WINAPI UiThread(LPVOID) {
     g_mouseHook = g_keyHook = nullptr;
     g_popup = nullptr;
     if (g_pop.wnd) DestroyWindow(g_pop.wnd);
-    g_pop.wnd = g_pop.edit = nullptr;
+    g_pop.wnd = nullptr;
     FreePopupGdi();
     if (g_pill) DestroyWindow(g_pill);
     if (g_host) DestroyWindow(g_host);

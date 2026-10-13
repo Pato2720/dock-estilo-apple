@@ -18,6 +18,10 @@ static const char* kAlias[] = {"deepseek-r1-7b", "phi-4-mini"};
 int wmain(int argc, wchar_t** argv) {
     wchar_t mode[16] = L"new";
     GetEnvironmentVariableW(L"FAKE_FOUNDRY", mode, 16);
+    if (!wcscmp(mode, L"hang")) {
+        Sleep(60000);  // como desde el navegador: el comando no termina nunca
+        return 1;
+    }
     if (argc < 3) return 1;
     bool server = !wcscmp(argv[1], L"server"), service = !wcscmp(argv[1], L"service");
     bool status = !wcscmp(argv[2], L"status");

@@ -21,6 +21,14 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
   escribir tu propia pregunta sobre el texto (Enter).
 - La respuesta llega palabra por palabra. **Copiar** la copia; Esc o un clic
   fuera cierra la ventanita.
+- **Intocable**: el botón y la ventanita nunca toman el foco, así que la app
+  en uso sigue en primer plano y no se pierde la selección. Al tocar la caja
+  de la pregunta, el mod lee el teclado él mismo (con tu distribución,
+  mayúsculas, AltGr y acentos; Ctrl+V pega, Ctrl+Retroceso borra una palabra)
+  y las teclas no llegan a la página, hasta Enter, Esc o un clic fuera. La
+  rueda del mouse encima desplaza la respuesta, no la página.
+- **Siempre encima** de todo mientras se ven, incluso de otras ventanas
+  "siempre visibles" (se vuelven a poner arriba cada cuarto de segundo).
 - Chrome, Edge, Firefox, Brave, Opera y Vivaldi.
 
 ## Con qué responde
@@ -32,8 +40,9 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
 | Otro servicio | Cualquiera compatible con la API de OpenAI, local o en la nube | Dirección, modelo y clave en la configuración |
 
 Con Foundry Local el mod encuentra solo la dirección del servicio (cambia en
-cada arranque), lo arranca si está apagado y elige un modelo hecho para la
-NPU si hay uno. Funciona con la versión actual de Foundry Local (`foundry
+cada arranque) mirando en qué puerto escucha su proceso, sin correr comandos
+(desde el navegador, `foundry …` puede quedarse colgado). Si no lo encuentra
+así, usa su comando con tiempos cortos y lo arranca si está apagado. Funciona con la versión actual de Foundry Local (`foundry
 server …`) y con la anterior (`foundry service …`).
 
 ### Si dice que Foundry Local no está en marcha
@@ -53,11 +62,11 @@ En la versión anterior los comandos eran `foundry service status` y
 Si se instaló con el navegador abierto, ciérralo y ábrelo otra vez.
 
 La API de Foundry ofrece todo su catálogo (también modelos que no tienes
-descargados), pero solo responde con los **cargados**. El mod pregunta a
-Foundry (`foundry model list --loaded` y `--cached`) y, si esa lista no
-nombra ninguno, le pregunta a la API con un pedido mínimo cuál responde.
-Elige primero uno cargado; si no hay, uno descargado, que carga solo
-("Cargando el modelo…").
+descargados), pero solo responde con los **cargados**. El mod le pregunta a
+la API con un pedido mínimo cuál responde (a uno sin cargar le contesta con
+un error al instante) y usa ese. Si no hay ninguno cargado, busca uno
+descargado (`foundry model list --cached`) y lo carga solo ("Cargando el
+modelo…"). La ventanita dice en qué paso está.
 Nunca elige uno sin descargar. Entre los de NPU prefiere los rápidos (Phi)
 antes que los de razonamiento (DeepSeek-R1, que piensa mucho antes de
 contestar). Para usar uno en particular, pon su nombre en **Modelo** (los
@@ -100,8 +109,11 @@ más; si no consigue el texto, lo copia.
 acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
 corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
 vieja, y un servidor que, como Foundry, ofrece todo el catálogo pero solo
-responde con modelos cargados (y listas con nombres, solo alias o vacías):
-38 comprobaciones (JSON, respuestas por partes, elección del
+responde con modelos cargados (y listas con nombres, solo alias o vacías),
+un `foundrylocald.exe` falso con los comandos de Foundry colgados, y un
+"navegador" en primer plano para comprobar que la ventanita no le quita el
+foco, que lo tecleado va a la caja y no a la página, y que vuelve a quedar
+encima si otra ventana la tapa: 46 comprobaciones (JSON, respuestas por partes, elección del
 modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
 pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa
