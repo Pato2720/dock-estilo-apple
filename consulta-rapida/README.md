@@ -52,13 +52,14 @@ En la versión anterior los comandos eran `foundry service status` y
 (`winget install Microsoft.FoundryLocal`) o hay que abrir una terminal nueva.
 Si se instaló con el navegador abierto, ciérralo y ábrelo otra vez.
 
-Foundry ofrece todos los modelos descargados, pero solo responde con los
-**cargados**. Si el elegido no lo está, el mod lo carga solo ("Cargando el
-modelo…", la primera vez tarda) y vuelve a preguntar. Elige primero los que
-ya están cargados; si no, uno de NPU, y entre ellos los rápidos (Phi) antes
-que los de razonamiento (DeepSeek-R1, que piensa mucho antes de contestar).
-Para usar uno en particular, pon su nombre en **Modelo** (los nombres salen
-en `foundry model list`) y cárgalo con `foundry model load <nombre>`.
+La API de Foundry ofrece todo su catálogo (también modelos que no tienes
+descargados), pero solo responde con los **cargados**. El mod pregunta a
+Foundry (`foundry model list --loaded` y `--cached`) y elige primero uno
+cargado; si no hay, uno descargado, que carga solo ("Cargando el modelo…").
+Nunca elige uno sin descargar. Entre los de NPU prefiere los rápidos (Phi)
+antes que los de razonamiento (DeepSeek-R1, que piensa mucho antes de
+contestar). Para usar uno en particular, pon su nombre en **Modelo** (los
+nombres salen en `foundry model list --cached`).
 
 Si aun así falla, copia la dirección que muestra `foundry server status`
 (por ejemplo `http://127.0.0.1:5273`) en **Dirección del servicio**, en la
@@ -96,7 +97,8 @@ más; si no consigue el texto, lo copia.
 (`servidor_falso.py`, con respuestas por partes, razonamiento `<think>`,
 acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
 corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
-vieja, y un servidor que solo responde con modelos cargados: 35 comprobaciones (JSON, respuestas por partes, elección del
+vieja, y un servidor que, como Foundry, ofrece todo el catálogo pero solo
+responde con modelos cargados: 36 comprobaciones (JSON, respuestas por partes, elección del
 modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
 pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa

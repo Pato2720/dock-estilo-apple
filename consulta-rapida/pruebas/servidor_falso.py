@@ -13,12 +13,20 @@ RESPUESTA = [
     "fue una serendipia.\n- Sinónimo: chiripa.",
 ]
 
-# Con "foundry" como segundo argumento imita a Foundry Local: ofrece modelos
-# descargados pero solo responde con los cargados (/openai/load/<modelo>).
+# Con "foundry" como segundo argumento imita a Foundry Local actual: la API
+# ofrece todo el catálogo (también modelos sin descargar), solo responde con
+# los cargados (los que anotó «foundry model load» en cargado.txt) y no tiene
+# los endpoints viejos /openai/loadedmodels ni /openai/load.
 FOUNDRY = len(sys.argv) > 2 and sys.argv[2] == "foundry"
-CARGADOS = set()
-MODELOS = ["DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", "Phi-4-mini-instruct-openvino-npu:2", "phi-4-mini-cpu"] if FOUNDRY \
+MODELOS = ["Phi-3-mini-4k-instruct-openvino-npu:1", "DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4",
+           "Phi-4-mini-instruct-openvino-npu:2", "phi-4-mini-cpu"] if FOUNDRY \
     else ["phi-4-mini-cpu", "Phi-4-mini-instruct-qnn-npu:2"]
+
+def cargados():
+    try:
+        return {open("cargado.txt").read().strip()}
+    except OSError:
+        return set()
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -36,13 +44,7 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import unquote
         if self.path.endswith("/v1/models"):
             self._json(200, {"object": "list", "data": [{"id": m} for m in MODELOS]})
-        elif FOUNDRY and self.path == "/openai/loadedmodels":
-            self._json(200, sorted(CARGADOS))
-        elif FOUNDRY and self.path.startswith("/openai/load/"):
-            name = unquote(self.path[len("/openai/load/"):].split("?")[0])
-            CARGADOS.add(name)
-            open("cargado.txt", "w").write(name)
-            self._json(200, {})
+
         else:
             self._json(404, {"error": {"message": "no existe"}})
 
@@ -54,7 +56,7 @@ class H(BaseHTTPRequestHandler):
             self._json(500, {"error": {"message": "El modelo no está cargado"}})
             return
         req = json.loads(body)
-        if FOUNDRY and req.get("model") not in CARGADOS:
+        if FOUNDRY and req.get("model") not in cargados():
             m = req.get("model")
             self._json(400, {"error": {"message": f"Model not loaded: Model '{m}' must be loaded before inference"}})
             return
