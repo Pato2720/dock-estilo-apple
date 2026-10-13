@@ -94,6 +94,8 @@ static void Defaults(const wchar_t* endpoint) {
     g_testSettings[L"maxTokens"] = L"400";
     g_testSettings[L"selectionSource"] = L"clipboard";
     g_testSettings[L"theme"] = L"light";
+    g_testSettings[L"apps"] = L"all";
+    g_testSettings[L"excludeApps"] = L"";
 }
 
 static std::string ReadFile(const char* path) {
@@ -274,7 +276,7 @@ int wmain() {
     ForgetBackend();
     Defaults(L"http://127.0.0.1:8765/v1");
     LoadSettings();
-    Check(Wh_ModInit(), "Wh_ModInit (como en el proceso principal del navegador)");
+    Check(Wh_ModInit(), "Wh_ModInit (como en el Explorador que hace de escritorio)");
     for (int i = 0; i < 100 && !(g_host && g_mouseHook && g_keyHook); i++) Pump(20);
     Check(g_host && g_pill && g_mouseHook && g_keyHook, "Se crearon las ventanas y los ganchos");
 
@@ -412,6 +414,54 @@ int wmain() {
     DumpPopup("out\\2-explicar-oscuro.bgra");
     PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
     Pump(200);
+
+    printf("== En cualquier app ==\n");
+    {
+        // El botón al soltar una selección hecha con el cursor de texto, en
+        // una app que no es un navegador (este proceso, prueba.exe).
+        SetForegroundWindow(browser);
+        Pump(100);
+        Check(AppAllowed(browser), "Funciona en una app cualquiera (no solo en el navegador)");
+        PostMessageW(g_host, WM_APP_MOUSEUP, 1, MAKELPARAM(200, 120));
+        Pump(450);
+        Check(IsWindowVisible(g_pill), "Al seleccionar texto aparece el botón Preguntar");
+        PostMessageW(g_host, WM_APP_HIDEPILL, 0, 0);
+        Pump(100);
+        PostMessageW(g_host, WM_APP_MOUSEUP, 0, MAKELPARAM(200, 120));
+        Pump(450);
+        Check(!IsWindowVisible(g_pill), "Arrastrar sin el cursor de texto (mover, elegir archivos) no lo muestra");
+        g_testSettings[L"excludeApps"] = L"notepad.exe, Prueba";
+        Wh_ModSettingsChanged();
+        Check(!AppAllowed(browser), "No funciona en las apps excluidas (con o sin .exe, sin importar mayúsculas)");
+        PostMessageW(g_host, WM_APP_MOUSEUP, 1, MAKELPARAM(200, 120));
+        Pump(450);
+        Check(!IsWindowVisible(g_pill), "Ni aparece el botón en ellas");
+        g_testSettings[L"excludeApps"] = L"";
+        g_testSettings[L"apps"] = L"browsers";
+        Wh_ModSettingsChanged();
+        Check(!AppAllowed(browser), "Con «Solo en navegadores», no en otras apps");
+        g_testSettings[L"apps"] = L"all";
+        Wh_ModSettingsChanged();
+        Check(AppAllowed(browser), "Y vuelve a todas");
+        WNDCLASSW twc{};
+        twc.lpfnWndProc = DefWindowProcW;
+        twc.hInstance = GetModuleHandleW(nullptr);
+        twc.lpszClassName = L"Shell_TrayWnd";
+        RegisterClassW(&twc);
+        HWND tray = CreateWindowExW(WS_EX_TOOLWINDOW, L"Shell_TrayWnd", L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr,
+                                    twc.hInstance, nullptr);
+        twc.lpszClassName = L"ConsoleWindowClass";
+        RegisterClassW(&twc);
+        HWND console = CreateWindowExW(0, L"ConsoleWindowClass", L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr,
+                                       twc.hInstance, nullptr);
+        Check(!AppAllowed(tray) && AppAllowed(console), "No en la barra de tareas ni el escritorio; sí en una consola");
+        Check(IsConsoleWindow(console) && !IsConsoleWindow(browser), "En las consolas copia con Ctrl+Insert");
+        DestroyWindow(tray);
+        DestroyWindow(console);
+        SetForegroundWindow(browser);
+        SetFocus(page);
+        Pump(100);
+    }
 
     // Una pregunta seleccionada: la responde.
     g_testSettings[L"theme"] = L"light";

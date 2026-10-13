@@ -1,15 +1,10 @@
 // ==WindhawkMod==
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
-// @description     Selecciona texto en el navegador y pregunta, define, explica, traduce o responde ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.6
+// @description     Selecciona texto en cualquier app y pregunta, define, explica, traduce o responde ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
+// @version         1.7
 // @author          local
-// @include         chrome.exe
-// @include         msedge.exe
-// @include         firefox.exe
-// @include         brave.exe
-// @include         opera.exe
-// @include         vivaldi.exe
+// @include         explorer.exe
 // @compilerOptions -lwinhttp -liphlpapi -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
 // ==/WindhawkMod==
 
@@ -17,10 +12,11 @@
 /*
 # Consulta rápida al seleccionar
 
-Como Click to Do, pero dentro del navegador: seleccionas texto y aparece un
-botoncito **Preguntar**. Al tocarlo se abre una ventanita junto al texto que
+Como Click to Do: seleccionas texto en **cualquier app** (navegadores, Word,
+el Bloc de notas, PDF, chats, el Explorador…) y aparece un botoncito
+**Preguntar**. Al tocarlo se abre una ventanita junto al texto que
 lo **define**, **explica**, **resume** o **traduce**, responde la
-**pregunta** que seleccionaste, o lo que le preguntes sobre él. Sin abrir Copilot ni cambiar de pestaña.
+**pregunta** que seleccionaste, o lo que le preguntes sobre él. Sin abrir Copilot ni cambiar de ventana.
 
 ## Con qué responde
 
@@ -57,7 +53,7 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 * **Nunca toma el foco**: ni el botón ni la ventanita activan nada, así
   que la app en uso sigue en primer plano y no se pierde la selección. Al
   tocar la caja de la pregunta, el mod lee el teclado él mismo (las teclas
-  no llegan a la página) hasta Enter, Esc o un clic fuera.
+  no llegan a la app) hasta Enter, Esc o un clic fuera.
 * **Siempre encima** de todo mientras se ven, incluso de otras ventanas
   "siempre visibles".
 
@@ -67,7 +63,16 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
   portapapeles como estaba. Con "Accesibilidad de Windows" la lee sin
   copiar, pero hace que Chrome y Edge activen su modo de accesibilidad, que
   gasta algo más.
-* Funciona en Chrome, Edge, Firefox, Brave, Opera y Vivaldi.
+* Funciona en todas las apps: el mod corre una sola vez, dentro del
+  Explorador de Windows (`explorer.exe`), y ve el mouse y el teclado de
+  todas. El botón aparece cuando se selecciona arrastrando o con doble clic
+  empezando sobre texto (con el cursor de texto), así que no sale al mover
+  ventanas ni al elegir archivos. En la configuración se puede dejar solo en
+  los navegadores o excluir programas.
+* En las consolas (Terminal, símbolo del sistema) copia con Ctrl+Insert, para
+  no interrumpir lo que corre.
+* No funciona en apps abiertas como administrador (Windows no deja que una
+  app normal lea ni copie lo que pasa en ellas).
 */
 // ==/WindhawkModReadme==
 
@@ -90,6 +95,14 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
   $description: Solo para servicios que la piden
 - showButton: true
   $name: Botón "Preguntar" al seleccionar texto
+- apps: all
+  $name: Dónde funciona
+  $options:
+  - all: En todas las apps
+  - browsers: Solo en navegadores
+- excludeApps: ""
+  $name: Excepto en
+  $description: Programas donde no aparece, separados por coma (por ejemplo «code.exe, WindowsTerminal.exe»)
 - hotkey: ctrlShiftSpace
   $name: Atajo de teclado
   $options:
@@ -158,7 +171,7 @@ static const wchar_t kClipClass[] = L"WindhawkConsultaRapidaPortapapeles";
 enum : UINT {
     WM_APP_SELECTION = WM_APP + 1,  // lParam = SelectionResult* (lo libera quien lo recibe)
     WM_APP_ANSWER,                  // llegó texto nuevo de la respuesta
-    WM_APP_MOUSEUP,                 // wParam = x, lParam = y (pantalla)
+    WM_APP_MOUSEUP,                 // wParam = empezó con cursor de texto, lParam = x, y (pantalla)
     WM_APP_HIDEPILL,
     WM_APP_HOTKEY,
     WM_APP_SUBMIT,                  // Enter en la caja de la pregunta
@@ -192,6 +205,8 @@ struct Settings {
     Provider provider = Provider::Foundry;
     std::wstring endpoint, model, apiKey;
     bool showButton = true;
+    bool allApps = true;
+    std::vector<std::wstring> excluded;  // nombres de programa, en minúsculas
     Hotkey hotkey = Hotkey::CtrlShiftSpace;
     DefaultAction defaultAction = DefaultAction::Auto;
     std::wstring language = L"español", translateTo = L"inglés";
@@ -231,6 +246,17 @@ static void LoadSettings() {
     s.model = Trim(StringSetting(L"model"));
     s.apiKey = Trim(StringSetting(L"apiKey"));
     s.showButton = Wh_GetIntSetting(L"showButton") != 0;
+    s.allApps = StringSetting(L"apps") != L"browsers";
+    std::wstring ex = StringSetting(L"excludeApps");
+    CharLowerBuffW(ex.data(), (DWORD)ex.size());
+    for (size_t a = 0; a < ex.size();) {
+        size_t b = ex.find_first_of(L",;", a);
+        if (b == std::wstring::npos) b = ex.size();
+        std::wstring name = Trim(ex.substr(a, b - a));
+        if (!name.empty() && name.find(L'.') == std::wstring::npos) name += L".exe";
+        if (!name.empty()) s.excluded.push_back(name);
+        a = b + 1;
+    }
     std::wstring h = StringSetting(L"hotkey");
     s.hotkey = h == L"ctrlAltSpace" ? Hotkey::CtrlAltSpace : h == L"altQ" ? Hotkey::AltQ
              : h == L"none" ? Hotkey::None : Hotkey::CtrlShiftSpace;
@@ -453,7 +479,7 @@ static const wchar_t* const kActionNames[] = {L"Definir", L"Explicar", L"Resumir
 static constexpr int kChips = ARRAYSIZE(kActionNames);
 
 static std::wstring SystemPrompt(const Settings& st) {
-    return L"Respondes dentro de una ventanita junto a un texto que la persona seleccionó en el navegador. "
+    return L"Respondes dentro de una ventanita junto a un texto que la persona seleccionó en la pantalla. "
            L"Responde siempre en " + st.language +
            L", directo y breve (como mucho unas 120 palabras), sin saludos ni preámbulos y sin tablas.";
 }
@@ -868,7 +894,7 @@ static bool LoadFoundryModel(const std::wstring& base, const std::wstring& model
 }
 
 // Corre un comando de Foundry Local. Prueba "foundry" (en el PATH) y el
-// acceso de la Tienda en WindowsApps: si el navegador se abrió antes de
+// acceso de la Tienda en WindowsApps: si el Explorador arrancó antes de
 // instalarlo, su PATH todavía no lo tiene.
 static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out, DWORD* exitCode = nullptr) {
     if (RunCapture(L"foundry " + args, timeoutMs, out, exitCode)) return true;
@@ -881,7 +907,7 @@ static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& o
 using SayFn = std::function<void(const std::wstring&)>;
 
 // Puertos en los que escuchan los procesos de Foundry Local (sin correr su
-// comando: desde el navegador, «foundry …» puede quedarse colgado).
+// comando: lanzado desde otro programa, «foundry …» puede quedarse colgado).
 static std::vector<USHORT> FoundryListenPorts() {
     std::vector<USHORT> ports;
     auto isFoundry = [](DWORD pid) {
@@ -956,7 +982,7 @@ static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say
     std::string out;
     if (!RunFoundry(L"server status", 8000, out)) {
         error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal», "
-                L"descarga un modelo con «foundry run phi-4-mini» y vuelve a abrir el navegador.";
+                L"descarga un modelo con «foundry run phi-4-mini» y vuelve a intentarlo.";
         return false;
     }
     url = FirstLocalUrl(out);
@@ -1029,7 +1055,7 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
             // La API ofrece todo el catálogo, pero solo responde con lo
             // cargado. Primero se le pregunta a ella (rápido: a un modelo sin
             // cargar responde con un error al instante); los comandos de
-            // Foundry, que pueden colgarse desde el navegador, después.
+            // Foundry, que pueden colgarse, después.
             say(L"Buscando el modelo cargado");
             ULONGLONG t0 = GetTickCount64();
             std::vector<std::wstring> loaded = FoundryLoadedModels(b.base, st.apiKey);
@@ -1369,13 +1395,24 @@ static std::wstring ClipboardText(HWND owner) {
     return t;
 }
 
+// En las consolas, Ctrl+C sin nada seleccionado interrumpe el programa que
+// corre: ahí se copia con Ctrl+Insert.
+static bool IsConsoleWindow(HWND h) {
+    wchar_t cls[64] = {};
+    if (h) GetClassNameW(GetAncestor(h, GA_ROOT), cls, ARRAYSIZE(cls));
+    return !wcscmp(cls, L"ConsoleWindowClass") || !wcscmp(cls, L"CASCADIA_HOSTING_WINDOW_CLASS") ||
+           !wcscmp(cls, L"PseudoConsoleWindow") || !wcscmp(cls, L"mintty") || !wcscmp(cls, L"PuTTY");
+}
+
 static void SendCtrlC() {
+    WORD key = IsConsoleWindow(GetForegroundWindow()) ? VK_INSERT : 'C';
     INPUT in[4] = {};
     for (auto& i : in) i.type = INPUT_KEYBOARD;
     in[0].ki.wVk = VK_CONTROL;
-    in[1].ki.wVk = 'C';
-    in[2].ki.wVk = 'C';
+    in[1].ki.wVk = key;
+    in[2].ki.wVk = key;
     in[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    if (key == VK_INSERT) in[1].ki.dwFlags = in[2].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
     in[3].ki.wVk = VK_CONTROL;
     in[3].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(4, in, sizeof(INPUT));
@@ -1477,7 +1514,7 @@ struct SelectionJob {
     HWND reply = nullptr;
 };
 
-// Hilo aparte: UI Automation llama al propio navegador y copiar espera al
+// Hilo aparte: UI Automation llama a la app en uso y copiar espera al
 // portapapeles; ninguna de las dos cosas puede frenar los ganchos del mouse.
 static DWORD WINAPI SelectionThread(LPVOID param) {
     WorkerScope scope;
@@ -1736,7 +1773,7 @@ static void ReadSelection(POINT pt, HWND owner) {
 static LRESULT CALLBACK PillWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;  // el navegador sigue con el foco (y su selección)
+            return MA_NOACTIVATE;  // la app en uso sigue con el foco (y su selección)
         case WM_LBUTTONUP:
             HidePill();
             ReadSelection(g_pillPt, g_pillOwner);
@@ -2236,7 +2273,7 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     g_pop.text = sel;
     g_pop.query.clear();
     g_typing = false;
-    g_pop.owner = owner;
+    g_pop.owner = owner ? owner : GetAncestor(GetForegroundWindow(), GA_ROOT);
     g_pop.hasAction = false;
     g_pop.hotChip = -1;
     g_pop.scroll = 0;
@@ -2286,19 +2323,79 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
 }
 
 // ---------------------------------------------------------------------------
-// Ganchos del mouse y del teclado (solo cuando el navegador está al frente)
+// Ganchos del mouse y del teclado (en la app que esté al frente)
 // ---------------------------------------------------------------------------
 
 static HHOOK g_mouseHook = nullptr, g_keyHook = nullptr;
 static POINT g_downPt{};
+static bool g_downIbeam = false;  // al apretar, el cursor era de texto
 static DWORD g_lastUpTime = 0;
 static POINT g_lastUpPt{};
 
-static bool OurBrowserInFront() {
-    HWND fg = GetForegroundWindow();
+static const wchar_t* const kBrowsers[] = {L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe",
+                                           L"opera.exe",  L"vivaldi.exe", L"arc.exe",    L"zen.exe"};
+
+// Nombre del programa de una ventana, en minúsculas (se recuerda el último).
+static std::wstring ProcessName(HWND h) {
+    static DWORD lastPid = 0;
+    static std::wstring lastName;
+    static SRWLOCK lock = SRWLOCK_INIT;
     DWORD pid = 0;
-    if (fg) GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId() && fg != g_pop.wnd;
+    if (h) GetWindowThreadProcessId(h, &pid);
+    if (!pid) return L"";
+    AcquireSRWLockExclusive(&lock);
+    std::wstring name;
+    if (pid == lastPid) {
+        name = lastName;
+    } else if (HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+        wchar_t path[MAX_PATH];
+        DWORD n = ARRAYSIZE(path);
+        if (QueryFullProcessImageNameW(p, 0, path, &n)) {
+            const wchar_t* slash = wcsrchr(path, L'\\');
+            name = slash ? slash + 1 : path;
+            CharLowerBuffW(name.data(), (DWORD)name.size());
+        }
+        CloseHandle(p);
+        lastPid = pid;
+        lastName = name;
+    }
+    ReleaseSRWLockExclusive(&lock);
+    return name;
+}
+
+// ¿Funciona en la app que está al frente? (No en el escritorio ni en la
+// barra de tareas, ni en las apps excluidas.)
+static bool AppAllowed(HWND fg) {
+    if (!fg || fg == g_pop.wnd || fg == g_pill) return false;
+    wchar_t cls[64] = {};
+    GetClassNameW(fg, cls, ARRAYSIZE(cls));
+    for (const wchar_t* shell : {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"}) {
+        if (!wcscmp(cls, shell)) return false;
+    }
+    Settings st = CurrentSettings();
+    if (st.allApps && st.excluded.empty()) return true;
+    std::wstring name = ProcessName(fg);
+    if (name.empty()) return st.allApps;  // no se puede saber (por ejemplo, una app de administrador)
+    for (auto& e : st.excluded) {
+        if (name == e) return false;
+    }
+    if (st.allApps) return true;
+    for (const wchar_t* b : kBrowsers) {
+        if (name == b) return true;
+    }
+    return false;
+}
+
+// La app donde se seleccionó sigue al frente (para escribir en la caja).
+static bool OwnerInFront() {
+    HWND fg = GetForegroundWindow();
+    return fg && fg != g_pop.wnd && GetAncestor(fg, GA_ROOT) == g_pop.owner;
+}
+
+static bool IsIbeamCursor() {
+    static HCURSOR ibeam = LoadCursorW(nullptr, IDC_IBEAM);
+    CURSORINFO ci{sizeof(ci)};
+    return GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && ci.hCursor == ibeam;
 }
 
 // ¿El punto cae en el contenido de una página (no en pestañas ni barras)?
@@ -2334,6 +2431,7 @@ static LRESULT CALLBACK MouseHook(int code, WPARAM w, LPARAM l) {
         switch (w) {
             case WM_LBUTTONDOWN:
                 g_downPt = m->pt;
+                g_downIbeam = IsIbeamCursor();
                 PostMessageW(g_host, WM_APP_HIDEPILL, 0, MAKELPARAM(m->pt.x, m->pt.y));
                 break;
             case WM_LBUTTONUP: {
@@ -2344,8 +2442,9 @@ static LRESULT CALLBACK MouseHook(int code, WPARAM w, LPARAM l) {
                            std::abs(m->pt.y - g_lastUpPt.y) < 6;
                 g_lastUpTime = m->time;
                 g_lastUpPt = m->pt;
-                if ((drag || dbl) && OurBrowserInFront()) {
-                    PostMessageW(g_host, WM_APP_MOUSEUP, (WPARAM)m->pt.x, (LPARAM)m->pt.y);
+                if ((drag || dbl) && !InPopup(m->pt)) {
+                    PostMessageW(g_host, WM_APP_MOUSEUP, MAKEWPARAM(g_downIbeam, 0),
+                                 MAKELPARAM(m->pt.x, m->pt.y));
                 }
                 break;
             }
@@ -2418,13 +2517,13 @@ static LRESULT CALLBACK KeyHook(int code, WPARAM w, LPARAM l) {
         bool down = w == WM_KEYDOWN || w == WM_SYSKEYDOWN;
         bool alt = GetAsyncKeyState(VK_MENU) & 0x8000;
         bool system = k->vkCode == VK_LWIN || k->vkCode == VK_RWIN || (alt && (k->vkCode == VK_TAB || k->vkCode == VK_F4));
-        if (g_typing && !OurBrowserInFront()) {
+        if (g_typing && !OwnerInFront()) {
             g_typing = false;  // se cambió de app: el teclado vuelve a ella
             InvalidateRect(g_pop.wnd, nullptr, FALSE);
         } else if (g_typing && !IsModifierKey(k->vkCode) && !system) {
             if (down) TypeKey(k);
             return 1;  // la tecla es de la caja, no de la página
-        } else if (!g_typing && down && k->vkCode == VK_ESCAPE && OurBrowserInFront()) {
+        } else if (!g_typing && down && k->vkCode == VK_ESCAPE && OwnerInFront()) {
             PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
             return 1;
         }
@@ -2434,7 +2533,7 @@ static LRESULT CALLBACK KeyHook(int code, WPARAM w, LPARAM l) {
         if (k->vkCode != VK_SHIFT && k->vkCode != VK_LSHIFT && k->vkCode != VK_RSHIFT && k->vkCode != VK_CONTROL &&
             k->vkCode != VK_LCONTROL && k->vkCode != VK_RCONTROL && k->vkCode != VK_MENU && k->vkCode != VK_LMENU &&
             k->vkCode != VK_RMENU) {
-            if (HotkeyMatches((Hotkey)g_hotkey.load(), k->vkCode) && OurBrowserInFront()) {
+            if (HotkeyMatches((Hotkey)g_hotkey.load(), k->vkCode) && AppAllowed(GetForegroundWindow())) {
                 PostMessageW(g_host, WM_APP_HOTKEY, 0, 0);
                 return 1;  // el atajo es del mod
             }
@@ -2451,8 +2550,11 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     switch (msg) {
         case WM_APP_MOUSEUP: {
             if (!CurrentSettings().showButton) return 0;
-            POINT pt{(LONG)wParam, (LONG)lParam};
-            if (!IsPageContent(pt)) return 0;
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            // Solo si se seleccionó texto: empezó con el cursor de texto (o
+            // en el contenido de una página web).
+            if (!LOWORD(wParam) && !IsPageContent(pt)) return 0;
+            if (!AppAllowed(GetForegroundWindow())) return 0;
             g_pendingPt = pt;
             g_pendingOwner = GetAncestor(GetForegroundWindow(), GA_ROOT);
             // Un momento, por si fue el primero de un doble clic o sigue
@@ -2488,7 +2590,10 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_TIMER:
             if (wParam == TIMER_PILL_ASK) {
                 KillTimer(hwnd, TIMER_PILL_ASK);
-                if (OurBrowserInFront()) ShowPill(g_pendingPt, g_pendingOwner);
+                if (AppAllowed(GetForegroundWindow()) &&
+                    GetAncestor(GetForegroundWindow(), GA_ROOT) == g_pendingOwner) {
+                    ShowPill(g_pendingPt, g_pendingOwner);
+                }
             } else if (wParam == TIMER_PILL_HIDE) {
                 HidePill();
             } else if (wParam == TIMER_TOP) {
@@ -2572,19 +2677,31 @@ static DWORD WINAPI UiThread(LPVOID) {
     return 0;
 }
 
-// Solo en el proceso principal del navegador (no en los de las páginas ni
-// en los auxiliares, que no tienen ventanas ni red).
-static bool IsBrowserMainProcess() {
+// Corre en un solo proceso para todo el sistema: el Explorador que hace de
+// escritorio y barra de tareas (no en las ventanas de carpetas que abre en
+// procesos aparte). Los ganchos del mouse y del teclado ven todas las apps.
+static bool IsShellProcess() {
     std::wstring cmd = GetCommandLineW();
-    return cmd.find(L"--type=") == std::wstring::npos && cmd.find(L"-contentproc") == std::wstring::npos;
+    CharLowerBuffW(cmd.data(), (DWORD)cmd.size());
+    return cmd.find(L"/factory") == std::wstring::npos && cmd.find(L"-embedding") == std::wstring::npos &&
+           cmd.find(L"/separate") == std::wstring::npos;
 }
+
+static HANDLE g_single = nullptr;
 
 // ---------------------------------------------------------------------------
 // Windhawk
 // ---------------------------------------------------------------------------
 
 BOOL Wh_ModInit() {
-    if (!IsBrowserMainProcess()) return TRUE;
+    if (!IsShellProcess()) return TRUE;
+    // Por si hay dos (otro Explorador que no se reconoció): solo el primero.
+    g_single = CreateMutexW(nullptr, FALSE, L"Local\\WindhawkConsultaRapida");
+    if (!g_single || GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (g_single) CloseHandle(g_single);
+        g_single = nullptr;
+        return TRUE;
+    }
     LoadSettings();
     g_hotkey = (int)CurrentSettings().hotkey;
     g_unloading = false;
@@ -2606,6 +2723,8 @@ void Wh_ModUninit() {
         AbortRequest();
         Sleep(50);
     }
+    if (g_single) CloseHandle(g_single);
+    g_single = nullptr;
 }
 
 void Wh_ModSettingsChanged() {
