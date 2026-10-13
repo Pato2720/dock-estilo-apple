@@ -27,12 +27,44 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
 
 | Opción | Dónde corre | Cómo prepararlo |
 |---|---|---|
-| **Foundry Local** (de fábrica) | En tu equipo, en la **NPU** de un PC Copilot+ (o en la GPU/CPU) | `winget install Microsoft.FoundryLocal` y `foundry model run phi-4-mini` |
+| **Foundry Local** (de fábrica) | En tu equipo, en la **NPU** de un PC Copilot+ (o en la GPU/CPU) | `winget install Microsoft.FoundryLocal` y `foundry run phi-4-mini` |
 | Ollama | En tu equipo (GPU/CPU) | `ollama run llama3.2` |
 | Otro servicio | Cualquiera compatible con la API de OpenAI, local o en la nube | Dirección, modelo y clave en la configuración |
 
 Con Foundry Local el mod encuentra solo la dirección del servicio (cambia en
-cada arranque) y elige un modelo hecho para la NPU si hay uno. Con los
+cada arranque), lo arranca si está apagado y elige un modelo hecho para la
+NPU si hay uno. Funciona con la versión actual de Foundry Local (`foundry
+server …`) y con la anterior (`foundry service …`).
+
+### Si dice que Foundry Local no está en marcha
+
+En una terminal (PowerShell):
+
+```
+foundry server status        # ¿está corriendo? muestra su dirección
+foundry server start         # si no, arráncalo
+foundry run phi-4-mini       # descarga y carga un modelo (la primera vez tarda)
+foundry model list           # qué modelos hay (los "npu" usan la NPU)
+```
+
+En la versión anterior los comandos eran `foundry service status` y
+`foundry service start`. Si `foundry` no se reconoce, no está instalado
+(`winget install Microsoft.FoundryLocal`) o hay que abrir una terminal nueva.
+Si se instaló con el navegador abierto, ciérralo y ábrelo otra vez.
+
+Foundry ofrece todos los modelos descargados, pero solo responde con los
+**cargados**. Si el elegido no lo está, el mod lo carga solo ("Cargando el
+modelo…", la primera vez tarda) y vuelve a preguntar. Elige primero los que
+ya están cargados; si no, uno de NPU, y entre ellos los rápidos (Phi) antes
+que los de razonamiento (DeepSeek-R1, que piensa mucho antes de contestar).
+Para usar uno en particular, pon su nombre en **Modelo** (los nombres salen
+en `foundry model list`) y cárgalo con `foundry model load <nombre>`.
+
+Si aun así falla, copia la dirección que muestra `foundry server status`
+(por ejemplo `http://127.0.0.1:5273`) en **Dirección del servicio**, en la
+configuración del mod. Para que no cambie de puerto:
+`foundry server restart --port 5273 --idle-timeout 0`. En *Registros* del
+mod, en Windhawk, aparece lo que respondió Foundry. Con los
 locales, el texto no sale de tu equipo; con un servicio en la nube, el texto
 seleccionado se envía a ese servicio.
 
@@ -63,8 +95,9 @@ más; si no consigue el texto, lo copia.
 `pruebas/correr.sh` levanta un servidor falso compatible con OpenAI
 (`servidor_falso.py`, con respuestas por partes, razonamiento `<think>`,
 acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
-corre en Wine: 29 comprobaciones (JSON, respuestas por partes, elección del
-modelo de NPU, la dirección de Foundry Local, la ventanita y sus botones, la
+corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
+vieja, y un servidor que solo responde con modelos cargados: 35 comprobaciones (JSON, respuestas por partes, elección del
+modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
 pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa
 las imágenes a PNG. Para compilarlo como Windhawk:

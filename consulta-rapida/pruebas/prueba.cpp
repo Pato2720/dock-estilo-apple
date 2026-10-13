@@ -134,9 +134,11 @@ int wmain() {
     }
     Check(JsonIds("{\"data\":[{\"id\":\"a\"},{\"id\":\"b-npu\"}]}") == std::vector<std::wstring>{L"a", L"b-npu"},
           "Lee la lista de modelos");
-    Check(PickModel({L"phi-4-mini-cpu", L"Phi-4-mini-instruct-qnn-NPU:2"}) == L"Phi-4-mini-instruct-qnn-NPU:2" &&
+    Check(PickModel({L"DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", L"Phi-4-mini-instruct-openvino-npu:2"}) ==
+              L"Phi-4-mini-instruct-openvino-npu:2" &&
+              PickModel({L"phi-4-mini-cpu", L"Phi-4-mini-instruct-qnn-NPU:2"}) == L"Phi-4-mini-instruct-qnn-NPU:2" &&
               PickModel({L"llama3.2"}) == L"llama3.2" && PickModel({}).empty(),
-          "Prefiere los modelos hechos para la NPU");
+          "Prefiere los modelos de NPU, y los rápidos antes que los de razonamiento");
     Check(FirstLocalUrl("🟢 Model management service is running on http://localhost:5273/openai/status\n") ==
               L"http://localhost:5273",
           "Encuentra la dirección de Foundry Local en «foundry service status»");
@@ -175,6 +177,50 @@ int wmain() {
               "Encuentra el servicio y elige el modelo de NPU");
         printf("    %ls\n", (b.label + L" " + err).c_str());
     }
+    // Foundry Local: la dirección sale de su propio comando (versión nueva y vieja).
+    g_testSettings[L"provider"] = L"foundry";
+    g_testSettings[L"endpoint"] = L"";
+    LoadSettings();
+    for (const wchar_t* mode : {L"new", L"old"}) {
+        SetEnvironmentVariableW(L"FAKE_FOUNDRY", mode);
+        ForgetBackend();
+        Backend b;
+        std::wstring err;
+        bool ok = ResolveBackend(CurrentSettings(), b, err);
+        printf("    %ls: %ls%ls\n", mode, b.base.c_str(), err.c_str());
+        Check(ok && b.base == L"http://127.0.0.1:8765/v1" && b.model == L"Phi-4-mini-instruct-qnn-npu:2",
+              wcscmp(mode, L"new") ? "Encuentra Foundry Local de antes («foundry service status»)"
+                                   : "Encuentra Foundry Local nuevo («foundry server status»)");
+    }
+    SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"off");
+    ForgetBackend();
+    {
+        Backend b;
+        std::wstring err;
+        Check(!ResolveBackend(CurrentSettings(), b, err) && err.find(L"foundry server start") != std::wstring::npos,
+              "Si Foundry Local no arranca, dice cómo arrancarlo");
+    }
+    // Foundry ofrece un modelo descargado pero no cargado: se carga solo.
+    SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"load");
+    ForgetBackend();
+    DeleteFileW(L"cargado.txt");
+    MarkAsk();
+    StartAsk(Action::Define, L"hola", L"");
+    Check(WaitAnswer(20000) && CurrentAnswer().error.empty() && !CurrentAnswer().raw.empty(),
+          "Si el modelo no está cargado, lo carga y responde");
+    std::string loadedName = ReadFile("cargado.txt");
+    printf("    cargado: %s · %ls\n", loadedName.c_str(), CurrentAnswer().label.c_str());
+    Check(loadedName == "Phi-4-mini-instruct-openvino-npu:2",
+          "Elige el de NPU que responde rápido, no el de razonamiento");
+    ForgetBackend();
+    MarkAsk();
+    StartAsk(Action::Define, L"hola", L"");
+    Check(WaitAnswer(20000) && CurrentAnswer().error.empty() &&
+              CurrentAnswer().label.find(L"Phi-4-mini-instruct-openvino-npu:2") != std::wstring::npos,
+          "La siguiente vez usa el que ya está cargado");
+    ForgetBackend();
+    Defaults(L"http://127.0.0.1:8765/v1");
+    LoadSettings();
     Check(Wh_ModInit(), "Wh_ModInit (como en el proceso principal del navegador)");
     for (int i = 0; i < 100 && !(g_host && g_mouseHook && g_keyHook); i++) Pump(20);
     Check(g_host && g_pill && g_mouseHook && g_keyHook, "Se crearon las ventanas y los ganchos");
