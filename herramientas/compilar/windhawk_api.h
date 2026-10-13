@@ -15,6 +15,7 @@ __declspec(dllimport) BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value);
 __declspec(dllimport) int Wh_GetIntSetting(PCWSTR valueName, ...);
 __declspec(dllimport) PCWSTR Wh_GetStringSetting(PCWSTR valueName, ...);
 __declspec(dllimport) void Wh_FreeStringSetting(PCWSTR string);
+__declspec(dllimport) BOOL Wh_SetFunctionHook(void* targetFunction, void* hookFunction, void** originalFunction);
 #ifdef __cplusplus
 }
 #endif

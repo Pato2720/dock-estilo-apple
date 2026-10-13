@@ -25,6 +25,8 @@ Windows 11 por un Dock como el de macOS, abajo de la pantalla principal.
 - **Se esconde** con ventanas maximizadas o en pantalla completa; aparece al
   llevar el mouse al borde de abajo, ocupando solo su espacio.
 - Rueda del mouse sobre una app para pasar entre ventanas o minimizar.
+- **Tope de cuadros por segundo** opcional (60, 30 o 60 solo con batería)
+  para ahorrar batería en monitores de alta frecuencia.
 
 | Vista de ventanas | Ventana minimizada | Menú |
 |---|---|---|
@@ -42,7 +44,8 @@ Windows 11 por un Dock como el de macOS, abajo de la pantalla principal.
 3. Ajusta la configuración del mod a tu gusto.
 
 Hace pareja con el mod **Muesca superior estilo Apple** (barra de menús,
-reloj y bandeja arriba).
+reloj y bandeja arriba) y con **Menús estilo Apple**, un mod aparte que está en
+[`menu-estilo-apple/`](menu-estilo-apple/).
 
 ## Configuración
 
@@ -51,8 +54,10 @@ fondo (cristal líquido, translúcido, oscuro o claro), opacidad, redondeo,
 distancia al borde, cuándo esconderse y con qué retardos, ocultar la barra de
 tareas, Inicio (con icono propio opcional), papelera (de Windows o
 vectorial), indicador de app abierta, nombres, sombras, vista de ventanas
-(miniaturas, lista o nada), clic central, rueda del mouse, bloquear el orden,
-rebotes y velocidad de las animaciones.
+(miniaturas, lista o nada), clic central (otra ventana, minimizar, cerrar),
+clic en Inicio (menú Inicio, todas las aplicaciones o búsqueda), rueda del
+mouse, bloquear el orden, rebotes, velocidad de las animaciones y cuadros por
+segundo.
 
 ## Cómo está hecho
 
@@ -64,6 +69,18 @@ rebotes y velocidad de las animaciones.
   cristal y tomar las fotos de las ventanas.
 - El menú y la vista de ventanas son ventanas propias con ganchos de bajo
   nivel solo mientras están abiertos.
+- Poco trabajo en segundo plano: el listado de ventanas valida cada proceso
+  una vez por recorrido; la barra de tareas se busca por su clase; solo se
+  escuchan los eventos del sistema que se usan; las fotos de ventanas se
+  toman solo con la vista en miniaturas, nunca con un juego en pantalla
+  completa, y se reducen con un promedio de área separable.
+
+## Menús estilo Apple
+
+Mod aparte, en su propia carpeta: [`menu-estilo-apple/`](menu-estilo-apple/).
+Cambia el estilo de los menús del clic derecho y de los menús desplegables en
+el escritorio, el Explorador y las aplicaciones, con los mismos colores que el
+menú del Dock. No necesita el Dock.
 
 ## Herramientas
 
@@ -72,8 +89,8 @@ rebotes y velocidad de las animaciones.
   advertencias fuera de Windhawk.
 - `herramientas/pruebas/`: banco de pruebas que carga el mod sin cambios en
   Wine, con una barra de tareas simulada, y recorre los escenarios con el
-  mouse simulado (100 comprobaciones: clics, arrastres, menú, vista de
-  ventanas, Finalizar tarea, esconderse, 120 fps…).
+  mouse simulado (101 comprobaciones: clics, arrastres, menú, vista de
+  ventanas, Finalizar tarea, esconderse, 120 fps, tope de 60…).
 
 ## Limitaciones
 

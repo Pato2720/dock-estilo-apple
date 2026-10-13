@@ -2,7 +2,7 @@
 // @id              dock-estilo-apple
 // @name            Dock estilo Apple
 // @description     Reemplaza la barra de tareas por un Dock estilo macOS: ampliación fluida a la frecuencia del monitor, cristal líquido, arrastrar para ordenar y la papelera de Windows
-// @version         3.0
+// @version         3.2
 // @author          local
 // @include         explorer.exe
 // @architecture    x86-64
@@ -101,6 +101,12 @@ menús, reloj y bandeja arriba; el Dock abajo).
 - startIcon: ""
   $name: Icono de Inicio
   $description: Vacío = el logo de Windows del sistema. O una ruta a .ico / .png, o archivo.exe,índice
+- startAction: startMenu
+  $name: Clic en Inicio
+  $options:
+  - startMenu: Abre el menú Inicio
+  - allApps: Abre la carpeta de todas las aplicaciones
+  - search: Abre la búsqueda
 - showTrash: true
   $name: Papelera al final
 - trashIcon: windows
@@ -136,6 +142,7 @@ menús, reloj y bandeja arriba; el Dock abajo).
   $name: Clic central sobre una app
   $options:
   - newWindow: Abrir otra ventana
+  - minimize: Minimizar sus ventanas
   - close: Cerrar sus ventanas
   - none: Nada
 - scrollAction: cycle
@@ -159,6 +166,14 @@ menús, reloj y bandeja arriba; el Dock abajo).
   - slow: Lenta
   - normal: Normal
   - fast: Rápida
+- frameRate: monitor
+  $name: Cuadros por segundo de las animaciones
+  $description: Limitarlos ahorra batería y CPU en monitores de alta frecuencia
+  $options:
+  - monitor: Los del monitor (60, 120, 144…)
+  - battery: Los del monitor; hasta 60 con batería
+  - max60: Hasta 60
+  - max30: Hasta 30
 - font: Segoe UI Variable Text
   $name: Fuente de los textos
 */
@@ -262,7 +277,10 @@ struct Settings {
     Indicator indicator = Indicator::Dot;
     Previews previews = Previews::Thumbnails;
     double previewDelay = 0.45;
-    int middleClick = 0;  // 0 nueva ventana, 1 cerrar, 2 nada
+    int middleClick = 0;  // 0 nueva ventana, 1 cerrar, 2 nada, 3 minimizar
+    int startAction = 0;  // 0 menú Inicio, 1 todas las apps, 2 búsqueda
+    int fpsCap = 0;       // 0 = los del monitor
+    bool fpsBattery = false;  // hasta 60 con batería
     bool scrollCycle = true;
     bool lockItems = false;
     DockStyle style = DockStyle::Glass;
@@ -313,7 +331,12 @@ static void LoadSettings() {
     s.previews = pv == L"list" ? Previews::List : pv == L"off" ? Previews::Off : Previews::Thumbnails;
     s.previewDelay = std::clamp(Wh_GetIntSetting(L"previewDelay"), 0, 3000) / 1000.0;
     std::wstring mc = StringSetting(L"middleClick");
-    s.middleClick = mc == L"close" ? 1 : mc == L"none" ? 2 : 0;
+    s.middleClick = mc == L"close" ? 1 : mc == L"none" ? 2 : mc == L"minimize" ? 3 : 0;
+    std::wstring sa = StringSetting(L"startAction");
+    s.startAction = sa == L"allApps" ? 1 : sa == L"search" ? 2 : 0;
+    std::wstring fr = StringSetting(L"frameRate");
+    s.fpsCap = fr == L"max60" ? 60 : fr == L"max30" ? 30 : 0;
+    s.fpsBattery = fr == L"battery";
     s.scrollCycle = StringSetting(L"scrollAction") != L"none";
     s.lockItems = Wh_GetIntSetting(L"lockItems") != 0;
     std::wstring style = StringSetting(L"style");
@@ -449,11 +472,15 @@ static bool IsCloaked(HWND h) {
            cloaked;
 }
 
-static std::wstring ClassOf(HWND h) {
-    wchar_t buf[128] = {};
-    GetClassNameW(h, buf, ARRAYSIZE(buf));
-    return buf;
-}
+// Nombre de clase en un búfer fijo: se pide por cada ventana en los
+// recorridos y en los eventos del sistema, así que sin reservar memoria.
+struct ClassName {
+    wchar_t s[128] = {};
+    explicit ClassName(HWND h) {
+        if (h) GetClassNameW(h, s, ARRAYSIZE(s));
+    }
+    bool operator==(const wchar_t* c) const { return wcscmp(s, c) == 0; }
+};
 
 // ---------------------------------------------------------------------------
 // Resortes (integración a 600 Hz, como en la muesca)
@@ -541,6 +568,36 @@ static inline void BlendOver(uint32_t* dst, float a, float r, float g, float b) 
            ((uint32_t)std::min(og, oa) << 8) | (uint32_t)std::min(ob, oa);
 }
 
+// Qué píxeles de origen cubre cada píxel de salida al reducir, y cuánto.
+struct AreaTaps {
+    std::vector<int> first, off;  // primer píxel de origen; tramo en w (off[i]..off[i+1])
+    std::vector<float> w, sum;
+};
+
+static AreaTaps MakeAreaTaps(int srcN, int dstN) {
+    AreaTaps t;
+    double k = (double)srcN / dstN;
+    t.first.resize(dstN);
+    t.off.resize(dstN + 1);
+    t.sum.resize(dstN);
+    t.w.reserve((size_t)dstN * ((int)std::ceil(k) + 1));
+    for (int i = 0; i < dstN; i++) {
+        double a0 = i * k, a1 = a0 + k;
+        int s0 = (int)a0, s1 = std::min((int)std::ceil(a1), srcN);
+        t.first[i] = s0;
+        t.off[i] = (int)t.w.size();
+        float total = 0;
+        for (int s = s0; s < s1; s++) {
+            float wt = (float)std::max(0.0, std::min(a1, s + 1.0) - std::max(a0, (double)s));
+            t.w.push_back(wt);
+            total += wt;
+        }
+        t.sum[i] = total;
+    }
+    t.off[dstN] = (int)t.w.size();
+    return t;
+}
+
 // Escala por promedio de área (para reducir) o bilineal (para ampliar).
 static Img Resample(const Img& s, int W, int H) {
     Img d;
@@ -550,31 +607,51 @@ static Img Resample(const Img& s, int W, int H) {
     if (s.empty() || W <= 0 || H <= 0) return d;
     double sx = (double)s.w / W, sy = (double)s.h / H;
     if (sx >= 1.0 && sy >= 1.0) {
+        // El promedio de área es separable: cada fila de origen se reduce a
+        // lo ancho una sola vez (la fila del borde entre dos filas de salida
+        // se guarda) y se acumula con su peso vertical. Mismo resultado que
+        // recorrer el área completa, con muchas menos operaciones: pesa en
+        // las fotos de ventanas, que se reducen desde varios megapíxeles.
+        AreaTaps tx = MakeAreaTaps(s.w, W), ty = MakeAreaTaps(s.h, H);
+        std::vector<float> acc((size_t)W * 4), hrow((size_t)W * 4);
+        int hrowY = -1;
         for (int y = 0; y < H; y++) {
-            double y0 = y * sy, y1 = y0 + sy;
-            for (int x = 0; x < W; x++) {
-                double x0 = x * sx, x1 = x0 + sx;
-                double acc[4] = {0, 0, 0, 0}, area = 0;
-                for (int yy = (int)y0; yy < (int)std::ceil(y1) && yy < s.h; yy++) {
-                    double wy = std::min(y1, yy + 1.0) - std::max(y0, (double)yy);
-                    if (wy <= 0) continue;
-                    for (int xx = (int)x0; xx < (int)std::ceil(x1) && xx < s.w; xx++) {
-                        double wx = std::min(x1, xx + 1.0) - std::max(x0, (double)xx);
-                        if (wx <= 0) continue;
-                        double wgt = wx * wy;
-                        uint32_t p = s.px[(size_t)yy * s.w + xx];
-                        acc[0] += (p >> 24) * wgt;
-                        acc[1] += ((p >> 16) & 0xFF) * wgt;
-                        acc[2] += ((p >> 8) & 0xFF) * wgt;
-                        acc[3] += (p & 0xFF) * wgt;
-                        area += wgt;
+            std::fill(acc.begin(), acc.end(), 0.0f);
+            for (int t = ty.off[y]; t < ty.off[y + 1]; t++) {
+                float wy = ty.w[t];
+                if (wy <= 0) continue;
+                int sy = ty.first[y] + t - ty.off[y];
+                if (sy != hrowY) {
+                    const uint32_t* row = &s.px[(size_t)sy * s.w];
+                    for (int x = 0; x < W; x++) {
+                        const uint32_t* p = row + tx.first[x];
+                        float a = 0, r = 0, g = 0, b = 0;
+                        for (int k = tx.off[x]; k < tx.off[x + 1]; k++, p++) {
+                            float wt = tx.w[k];
+                            uint32_t v = *p;
+                            a += (v >> 24) * wt;
+                            r += ((v >> 16) & 0xFF) * wt;
+                            g += ((v >> 8) & 0xFF) * wt;
+                            b += (v & 0xFF) * wt;
+                        }
+                        float* h = &hrow[(size_t)x * 4];
+                        h[0] = a;
+                        h[1] = r;
+                        h[2] = g;
+                        h[3] = b;
                     }
+                    hrowY = sy;
                 }
+                for (size_t i = 0; i < acc.size(); i++) acc[i] += hrow[i] * wy;
+            }
+            for (int x = 0; x < W; x++) {
+                float area = tx.sum[x] * ty.sum[y];
                 if (area <= 0) continue;
-                uint32_t a = (uint32_t)std::lround(acc[0] / area);
-                uint32_t r = std::min(a, (uint32_t)std::lround(acc[1] / area));
-                uint32_t g = std::min(a, (uint32_t)std::lround(acc[2] / area));
-                uint32_t b = std::min(a, (uint32_t)std::lround(acc[3] / area));
+                const float* o = &acc[(size_t)x * 4];
+                uint32_t a = std::min(255u, (uint32_t)std::lround(o[0] / area));
+                uint32_t r = std::min(a, (uint32_t)std::lround(o[1] / area));
+                uint32_t g = std::min(a, (uint32_t)std::lround(o[2] / area));
+                uint32_t b = std::min(a, (uint32_t)std::lround(o[3] / area));
                 d.px[(size_t)y * W + x] = (a << 24) | (r << 16) | (g << 8) | b;
             }
         }
@@ -829,7 +906,8 @@ static void FillCircle(Surface& dst, const RECT& clip, double cx, double cy, dou
     y1 = std::min(y1, dst.h);
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
-            double d = std::hypot(x + 0.5 - cx, y + 0.5 - cy) - r;
+            double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+            double d = std::sqrt(dx * dx + dy * dy) - r;  // hypot es mucho más lento
             float cov = (float)std::clamp(0.5 - d, 0.0, 1.0) * (float)a;
             if (cov > 0.002f) BlendOver(dst.bits + (size_t)y * dst.w + x, cov, R * cov, G * cov, B * cov);
         }
@@ -1066,7 +1144,7 @@ static bool IsDockWindow(HWND h) {
         if (ex & WS_EX_NOACTIVATE) return false;
     }
     if (IsCloaked(h)) return false;
-    std::wstring cls = ClassOf(h);
+    ClassName cls(h);
     static const wchar_t* kSkip[] = {L"Progman", L"WorkerW", L"Shell_TrayWnd",
                                      L"Shell_SecondaryTrayWnd", L"Windows.UI.Core.CoreWindow",
                                      L"WindhawkTopNotchWidget"};
@@ -1101,8 +1179,11 @@ struct ScanCtx {
 };
 
 static const ProcInfo& ProcFor(ScanCtx* ctx, DWORD pid) {
-    (*ctx->seen)[pid] = true;
+    bool& seen = (*ctx->seen)[pid];
     auto it = ctx->procs->find(pid);
+    // Varias ventanas del mismo proceso: se valida una sola vez por recorrido.
+    if (seen && it != ctx->procs->end()) return it->second;
+    seen = true;
     if (it != ctx->procs->end()) {
         // ¿Sigue siendo el mismo proceso? (los PID se reciclan)
         HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -1117,7 +1198,7 @@ static const ProcInfo& ProcFor(ScanCtx* ctx, DWORD pid) {
 }
 
 static BOOL CALLBACK FindCoreWindowProc(HWND h, LPARAM lParam) {
-    if (ClassOf(h) == L"Windows.UI.Core.CoreWindow") {
+    if (ClassName(h) == L"Windows.UI.Core.CoreWindow") {
         *(HWND*)lParam = h;
         return FALSE;
     }
@@ -2644,6 +2725,7 @@ static std::atomic<bool> g_vsyncStop{false};
 static std::atomic<bool> g_framePosted{false};
 static std::atomic<bool> g_vsyncReopen{true};
 static std::atomic<int> g_vsyncMode{0};  // 1 vblank, 2 DwmFlush, 3 temporizador
+static std::atomic<int> g_fpsCap{0};     // tope de cuadros por segundo (0 = sin tope)
 static std::mutex g_vsyncMx;
 static std::wstring g_vsyncDevice;
 static double g_lastFrame = 0;
@@ -2676,7 +2758,7 @@ static DWORD WINAPI VsyncThread(LPVOID) {
     KmtWaitVblank wait{};
     bool haveKmt = false;
     int kmtFails = 0;
-    double period = 1.0 / 60, next = 0;
+    double period = 1.0 / 60, next = 0, lastPost = 0;
 
     auto waitUntil = [&](double t) {
         double ms = (t - Now()) * 1000.0;
@@ -2752,6 +2834,13 @@ static DWORD WINAPI VsyncThread(LPVOID) {
             next += period;
             g_vsyncMode = 3;
         }
+        if (int cap = g_fpsCap; cap > 0) {
+            // Con tope se salta el refresco que llega demasiado pronto: los
+            // cuadros siguen en fase con el monitor, solo que menos.
+            double t = Now();
+            if (lastPost > 0 && t - lastPost < 0.92 / cap) continue;
+            lastPost = t;
+        }
         LARGE_INTEGER q;
         QueryPerformanceCounter(&q);
         if (g_vsyncRun && !g_framePosted.exchange(true)) {
@@ -2765,6 +2854,16 @@ static DWORD WINAPI VsyncThread(LPVOID) {
     }
     if (timer) CloseHandle(timer);
     return 0;
+}
+
+// Tope de cuadros según la opción (y si el equipo está con batería).
+static void UpdateFrameCap() {
+    int cap = g_set.fpsCap;
+    if (g_set.fpsBattery) {
+        SYSTEM_POWER_STATUS ps{};
+        if (GetSystemPowerStatus(&ps) && ps.ACLineStatus == 0) cap = 60;
+    }
+    g_fpsCap = cap;
 }
 
 static void Kick() {
@@ -2822,9 +2921,17 @@ static bool CreateBuffers() {
 static std::unique_ptr<Gdiplus::FontFamily> g_family;
 static std::unique_ptr<Gdiplus::Font> g_font;
 static std::unique_ptr<Gdiplus::Font> g_fontBoldPtr, g_fontSmallPtr;
+static float g_menuTextW = -1;      // ancho de la opción más larga (por fuente)
+static HDC g_measureDC = nullptr;   // DC fijo solo para medir textos
+
+static HDC MeasureDC() {
+    if (!g_measureDC) g_measureDC = CreateCompatibleDC(nullptr);
+    return g_measureDC;
+}
 
 static void RecreateFont() {
     g_font.reset();
+    g_menuTextW = -1;
     g_family = std::make_unique<Gdiplus::FontFamily>(g_set.font.c_str());
     if (g_family->GetLastStatus() != Gdiplus::Ok) g_family = std::make_unique<Gdiplus::FontFamily>(L"Segoe UI");
     g_font = std::make_unique<Gdiplus::Font>(g_family.get(), (Gdiplus::REAL)S(13), Gdiplus::FontStyleRegular,
@@ -2864,11 +2971,9 @@ static const LabelImg* GetLabelImg(const std::wstring& text) {
     if (!g_font) return nullptr;
     Gdiplus::RectF tb;
     {
-        HDC dc = CreateCompatibleDC(nullptr);
-        Gdiplus::Graphics mg(dc);
+        Gdiplus::Graphics mg(MeasureDC());
         mg.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
         mg.MeasureString(text.c_str(), (INT)text.size(), g_font.get(), Gdiplus::PointF(0, 0), &tb);
-        DeleteDC(dc);
     }
     int padX = S(11), padY = S(5), sp = S(8);
     int bw = std::min((int)std::ceil(tb.Width) + 2 * padX, S(380));
@@ -3157,9 +3262,9 @@ static bool UpdateEnvelope(const Layout& L, const LabelGeo& lg, double now) {
 static void Render(double now) {
     HWND hwnd = g_wnd.load();
     if (!hwnd || !g_bits) return;
-    Layout L = ComputeLayout(now);
+    g_lastLayout = ComputeLayout(now);  // sin copiar el diseño en cada cuadro
+    const Layout& L = g_lastLayout;
     LabelGeo lg = ComputeLabel(L);
-    g_lastLayout = L;
     if (UpdateEnvelope(L, lg, now)) g_fullRedraw = true;
     RECT win{g_envL, 0, g_envR, g_winH};
 
@@ -3606,6 +3711,7 @@ static void TakeScanResult();
 struct Snapshot {
     std::vector<Img> mips;  // con borde de 1 px (para BlitScaled)
     int w = 0, h = 0;       // tamaño visible de la ventana al tomarla
+    double taken = 0;       // cuándo se tomó (Now())
 };
 
 static std::map<HWND, std::shared_ptr<Snapshot>> g_snaps;  // hilo del Dock
@@ -3695,6 +3801,7 @@ static std::shared_ptr<Snapshot> CaptureWindow(HWND h) {
                 out = std::make_shared<Snapshot>();
                 out->w = cw;
                 out->h = ch;
+                out->taken = Now();
                 out->mips.push_back(Bordered(top));
                 Img half = top;
                 while (half.w > 64 && half.h > 64) {
@@ -3752,7 +3859,8 @@ static bool IsDockAppWindow(HWND h) {
 
 // Pide una foto (en el hilo de fotos) de una ventana del Dock.
 static bool QueueSnapshot(HWND h, bool minimizeAfter = false) {
-    if (g_set.previews == Previews::Off || !g_snapEvent || !IsDockAppWindow(h) || IsIconic(h)) return false;
+    // Las fotos solo se ven en la vista con miniaturas.
+    if (g_set.previews != Previews::Thumbnails || !g_snapEvent || !IsDockAppWindow(h) || IsIconic(h)) return false;
     {
         std::lock_guard<std::mutex> lock(g_snapMx);
         for (auto& j : g_snapJobs) {
@@ -3920,7 +4028,9 @@ static void OnItemClick(DockItem& it, bool newInstance) {
     Wh_Log(L"Clic en %s (%u ventanas)", it.name.c_str(), (unsigned)it.windows.size());
     switch (it.kind) {
         case Kind::Start:
-            SendKeys({VK_LWIN});
+            if (g_set.startAction == 1) ShellOpenAsync(L"shell:AppsFolder");
+            else if (g_set.startAction == 2) SendKeys({VK_LWIN, 'S'});
+            else SendKeys({VK_LWIN});
             return;
         case Kind::Trash:
             ShellOpenAsync(L"shell:RecycleBinFolder");
@@ -4177,16 +4287,12 @@ static bool CursorInPopup(POINT pt) {
 
 static Gdiplus::SizeF MeasureText(const std::wstring& t, Gdiplus::Font* f) {
     if (t.empty() || !f) return Gdiplus::SizeF(0, 0);
-    HDC dc = CreateCompatibleDC(nullptr);
     Gdiplus::RectF b;
-    {
-        Gdiplus::Graphics g(dc);
-        g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
-        Gdiplus::StringFormat sf;
-        sf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
-        g.MeasureString(t.c_str(), (INT)t.size(), f, Gdiplus::PointF(0, 0), &sf, &b);
-    }
-    DeleteDC(dc);
+    Gdiplus::Graphics g(MeasureDC());
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+    Gdiplus::StringFormat sf;
+    sf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+    g.MeasureString(t.c_str(), (INT)t.size(), f, Gdiplus::PointF(0, 0), &sf, &b);
     return Gdiplus::SizeF(b.Width, b.Height);
 }
 
@@ -4322,8 +4428,14 @@ static void RenderPopup() {
     } else if (g_pop.kind == PopKind::Preview) {
         DockItem* item = FindByUid(g_pop.itemUid);
         Gdiplus::SolidBrush tb(text);
+        // Nombre de la app, centrado.
         Gdiplus::RectF titleRc((float)M + S(12), (float)M + S(4), (float)(g_pop.w - 2 * M - S(24)), (float)S(28));
-        g.DrawString(g_pop.title.c_str(), (INT)g_pop.title.size(), g_fontBold.get(), titleRc, &sf, &tb);
+        Gdiplus::StringFormat hf;
+        hf.SetAlignment(Gdiplus::StringAlignmentCenter);
+        hf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        hf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+        hf.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+        g.DrawString(g_pop.title.c_str(), (INT)g_pop.title.size(), g_fontBold.get(), titleRc, &hf, &tb);
         const IconSet* set = item ? IconFor(*item) : nullptr;
         for (size_t i = 0; i < g_pop.prev.size(); i++) {
             const PrevEntry& e = g_pop.prev[i];
@@ -4358,8 +4470,12 @@ static void RenderPopup() {
                     g.DrawString(m.c_str(), (INT)m.size(), g_fontSmall.get(),
                                  Gdiplus::RectF(pxl, pyl, pw, ph), &cf, &db);
                 }
-                Gdiplus::RectF tr((float)e.card.left + S(8), (float)e.thumbRc.bottom + S(4),
-                                  (float)(e.card.right - e.card.left - S(16)), (float)S(22));
+                // Título de la ventana en la fila de arriba, centrado y sin
+                // llegar a la X (mismo margen a los dos lados).
+                int side = e.card.right - e.closeRc.left + S(4);
+                float rowH = (float)(e.closeRc.top + e.closeRc.bottom - 2 * e.card.top);  // la X va centrada en la fila
+                Gdiplus::RectF tr((float)(e.card.left + side), (float)e.card.top,
+                                  (float)(e.card.right - e.card.left - 2 * side), rowH);
                 Gdiplus::StringFormat cf;
                 cf.SetAlignment(Gdiplus::StringAlignmentCenter);
                 cf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
@@ -4553,8 +4669,11 @@ static void LayoutMenu() {
                                     L"Cerrar todas las ventanas", L"Mostrar todas las ventanas",
                                     L"Mostrar en el Explorador", L"Aplicaciones instaladas",
                                     L"Administrador de tareas", L"Abrir al iniciar sesión", L"Mantener en el Dock"};
-    float maxW = 0;
-    for (const wchar_t* t : kAll) maxW = std::max(maxW, MeasureText(t, g_font.get()).Width);
+    if (g_menuTextW < 0) {
+        g_menuTextW = 0;
+        for (const wchar_t* t : kAll) g_menuTextW = std::max(g_menuTextW, MeasureText(t, g_font.get()).Width);
+    }
+    float maxW = g_menuTextW;
     // Texto + margen izquierdo (palomita) + margen derecho + relleno de la fila
     int w = std::clamp((int)std::ceil(maxW) + S(26) + S(22) + S(12), S(210), S(460));
     int y = M + pad;
@@ -4921,7 +5040,11 @@ static bool LayoutPreview(DockItem& it) {
     GetMonitorInfoW(g_monitor, &mi);
     int monW = mi.rcMonitor.right - mi.rcMonitor.left;
     int pad = S(10), headH = S(34);
-    int cardW = S(214), thumbW = S(198), thumbH = S(122), cardH = thumbH + S(16) + S(26);
+    // Cada tarjeta: arriba una fila con el título y la X; abajo la
+    // miniatura. La miniatura en vivo la dibuja Windows encima de la
+    // ventana, así que nada propio (como la X) puede ir sobre ella.
+    int rowH = S(28);
+    int cardW = S(214), thumbW = S(198), thumbH = S(122), cardH = rowH + thumbH + S(10);
     int maxCols = std::max(1, (monW - 2 * M - S(40)) / (cardW + S(6)));
     g_pop.list = g_set.previews == Previews::List || (int)g_pop.prev.size() > maxCols;
     if (!g_pop.list) {
@@ -4944,7 +5067,7 @@ static bool LayoutPreview(DockItem& it) {
             double ww = std::max<LONG>(1, wr.right - wr.left), wh = std::max<LONG>(1, wr.bottom - wr.top);
             double k = std::min(thumbW / ww, thumbH / wh);
             int tw = std::max(S(40), (int)std::lround(ww * k)), th = std::max(S(30), (int)std::lround(wh * k));
-            int tx = x + (cardW - tw) / 2, ty = y + S(8) + (thumbH - th) / 2;
+            int tx = x + (cardW - tw) / 2, ty = y + rowH + (thumbH - th) / 2;
             e.thumbRc = RECT{tx, ty, tx + tw, ty + th};
             if (e.snap && !e.snap->mips.empty()) {
                 // El nivel más chico que todavía alcance, sin su borde.
@@ -4962,7 +5085,7 @@ static bool LayoutPreview(DockItem& it) {
                 e.snapFit = Resample(core, tw, th);
             }
             int cs = S(20);
-            e.closeRc = RECT{x + cardW - cs - S(4), y + S(4), x + cardW - S(4), y + S(4) + cs};
+            e.closeRc = RECT{x + cardW - cs - S(6), y + (rowH - cs) / 2, x + cardW - S(6), y + (rowH + cs) / 2};
             x += cardW + S(6);
         }
         g_pop.w = w + 2 * M;
@@ -5552,18 +5675,20 @@ static void PlaceWindow() {
 static bool g_tbHidden = false;
 static LPARAM g_tbPrevState = 0;
 
-static BOOL CALLBACK HideTrayProc(HWND h, LPARAM lParam) {
-    std::wstring cls = ClassOf(h);
-    if (cls == L"Shell_TrayWnd" || cls == L"Shell_SecondaryTrayWnd") {
-        DWORD pid = 0;
-        GetWindowThreadProcessId(h, &pid);
-        if (pid == GetCurrentProcessId()) {
-            bool hide = lParam != 0;
+// Esconde (o vuelve a mostrar) las barras de tareas de este Explorador. Se
+// buscan por su clase en lugar de recorrer todas las ventanas: corre cada
+// 1,5 s y en cada evento de mostrar ventana.
+static void ShowTrays(bool hide) {
+    for (const wchar_t* cls : {L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"}) {
+        HWND h = nullptr;
+        while ((h = FindWindowExW(nullptr, h, cls, nullptr)) != nullptr) {
+            DWORD pid = 0;
+            GetWindowThreadProcessId(h, &pid);
+            if (pid != GetCurrentProcessId()) continue;
             if (hide && IsWindowVisible(h)) ShowWindowAsync(h, SW_HIDE);
             if (!hide && !IsWindowVisible(h)) ShowWindowAsync(h, SW_SHOWNA);
         }
     }
-    return TRUE;
 }
 
 static void EnsureTaskbarAutoHide() {
@@ -5576,7 +5701,7 @@ static void EnsureTaskbarAutoHide() {
         abd.lParam = g_tbPrevState | ABS_AUTOHIDE;
         SHAppBarMessage(ABM_SETSTATE, &abd);
     }
-    EnumWindows(HideTrayProc, 1);
+    ShowTrays(true);
 }
 
 static void ApplyTaskbar(bool hide) {
@@ -5597,7 +5722,7 @@ static void ApplyTaskbar(bool hide) {
         Wh_SetIntValue(L"tbHidden", 0);
         g_tbHidden = false;
     }
-    EnumWindows(HideTrayProc, hide ? 1 : 0);
+    ShowTrays(hide);
 }
 
 static bool g_appBar = false;
@@ -5654,7 +5779,7 @@ static double g_lastInside = 0;
 static bool g_windowHidden = false;
 static double g_lastQuns = 0;
 
-static bool IsShellClass(const std::wstring& cls) {
+static bool IsShellClass(const ClassName& cls) {
     static const wchar_t* kClasses[] = {
         L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"Windows.UI.Core.CoreWindow",
         L"XamlExplorerHostIslandWindow", L"TopLevelWindowForOverflowXamlIsland", L"MultitaskingViewFrame",
@@ -5673,7 +5798,7 @@ static BOOL CALLBACK TopVisibleProc(HWND h, LPARAM lParam) {
     LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
     if (ex & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) return TRUE;
     if (GetWindow(h, GW_OWNER) && !(ex & WS_EX_APPWINDOW)) return TRUE;
-    std::wstring cls = ClassOf(h);
+    ClassName cls(h);
     if (IsShellClass(cls)) {
         if (cls == L"Progman" || cls == L"WorkerW") {
             *(HWND*)lParam = nullptr;
@@ -5695,7 +5820,7 @@ static void UpdateScreenState() {
                       (qs == QUNS_RUNNING_D3D_FULL_SCREEN || qs == QUNS_PRESENTATION_MODE);
     }
     HWND fg = GetForegroundWindow();
-    std::wstring fgClass = fg ? ClassOf(fg) : L"";
+    ClassName fgClass(fg);
     bool desktop = !fg || fg == GetDesktopWindow() || fg == GetShellWindow() || fgClass == L"#32769" ||
                    fgClass == L"Progman" || fgClass == L"WorkerW";
     if (desktop) {
@@ -6013,6 +6138,7 @@ static void ApplySettings(bool first) {
         }
     }
     RequestGlass(true);
+    UpdateFrameCap();
     ApplyTaskbar(g_set.hideTaskbar);
     UpdateAppBar();
     UpdateScreenState();
@@ -6030,12 +6156,13 @@ static void ApplySettings(bool first) {
 static HWINEVENTHOOK g_showHook = nullptr;
 static HWINEVENTHOOK g_fgHook = nullptr;
 static HWINEVENTHOOK g_minHook = nullptr;
+static HWINEVENTHOOK g_moveHook = nullptr;
 
 static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND h, LONG idObject, LONG, DWORD, DWORD) {
     HWND dock = g_wnd.load();
     if (!dock) return;
     if (event == EVENT_OBJECT_SHOW && idObject == OBJID_WINDOW && h && g_tbHidden) {
-        std::wstring cls = ClassOf(h);
+        ClassName cls(h);
         if (cls == L"Shell_TrayWnd" || cls == L"Shell_SecondaryTrayWnd") PostMessageW(dock, WM_APP_TRAYSHOW, 0, 0);
     } else if (event == EVENT_SYSTEM_FOREGROUND || event == EVENT_SYSTEM_MINIMIZEEND ||
                event == EVENT_SYSTEM_MINIMIZESTART || event == EVENT_SYSTEM_MOVESIZEEND) {
@@ -6152,7 +6279,7 @@ static LRESULT CALLBACK DockWndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_APP_TRAYSHOW:
-            if (g_tbHidden) EnumWindows(HideTrayProc, 1);
+            if (g_tbHidden) ShowTrays(true);
             return 0;
 
         case WM_APP_APPBAR:
@@ -6221,10 +6348,18 @@ static LRESULT CALLBACK DockWndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     tick++;
                     if (tick % 2 == 0) {
                         QueryTrashAsync();
-                        QueueSnapshot(GetForegroundWindow());
+                        // Foto al día de la ventana al frente, salvo con un
+                        // juego o video en pantalla completa (PrintWindow
+                        // cuesta y se notaría) o si la que hay es reciente.
+                        HWND fg = GetForegroundWindow();
+                        auto snap = SnapshotOf(fg);
+                        if (!g_exclusive && !g_fgFullscreen && (!snap || Now() - snap->taken > 6.0)) {
+                            QueueSnapshot(fg);
+                        }
                     }
                     if (tick % 20 == 0) PruneSnapshots();
-                    if (g_tbHidden) EnumWindows(HideTrayProc, 1);
+                    if (g_set.fpsBattery) UpdateFrameCap();
+                    if (g_tbHidden) ShowTrays(true);
                     if (tick % 40 == 0) RequestGlass(false);
                     return 0;
                 }
@@ -6313,6 +6448,7 @@ static LRESULT CALLBACK DockWndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ClosePopup(true);
             if (g_set.middleClick == 0) LaunchItem(it, true);
             else if (g_set.middleClick == 1) for (HWND w : it.windows) PostMessageW(w, WM_CLOSE, 0, 0);
+            else if (g_set.middleClick == 3) for (HWND w : it.windows) MinimizeWindow(w);
             return 0;
         }
 
@@ -6365,6 +6501,10 @@ static LRESULT CALLBACK DockWndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case WM_APP_POPKEY:
             MenuKey((UINT)wParam);
             return 0;
+
+        case WM_POWERBROADCAST:
+            if (wParam == PBT_APMPOWERSTATUSCHANGE) UpdateFrameCap();
+            return TRUE;
 
         case WM_DISPLAYCHANGE:
         case WM_DPICHANGED:
@@ -6540,8 +6680,13 @@ static DWORD WINAPI DockThread(LPVOID) {
 
     g_showHook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, WinEventProc,
                                  GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
-    g_fgHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, nullptr, WinEventProc, 0, 0,
+    // Solo los eventos que se usan: el rango de FOREGROUND a MOVESIZEEND
+    // incluye los de captura del mouse y de menús, que llegan a cada clic
+    // de cualquier app y cruzan al hilo del Dock para nada.
+    g_fgHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, WinEventProc, 0, 0,
                                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    g_moveHook = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, nullptr, WinEventProc, 0, 0,
+                                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     g_minHook = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, nullptr, WinEventProc, 0, 0,
                                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
@@ -6560,7 +6705,7 @@ static DWORD WINAPI DockThread(LPVOID) {
     }
 
     // Limpieza
-    for (HWINEVENTHOOK* h : {&g_showHook, &g_fgHook, &g_minHook}) {
+    for (HWINEVENTHOOK* h : {&g_showHook, &g_fgHook, &g_minHook, &g_moveHook}) {
         if (*h) UnhookWinEvent(*h);
         *h = nullptr;
     }
@@ -6639,6 +6784,8 @@ static DWORD WINAPI DockThread(LPVOID) {
     g_fontBoldPtr.reset();
     g_fontSmallPtr.reset();
     g_family.reset();
+    if (g_measureDC) DeleteDC(g_measureDC);
+    g_measureDC = nullptr;
     FreeBuffers();
     g_envL = g_envR = 0;
     if (g_menuHost) DestroyWindow(g_menuHost);
