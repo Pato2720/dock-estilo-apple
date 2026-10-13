@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.0
+// @version         1.1
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -651,15 +651,88 @@ static std::wstring ProviderName(Provider p) {
     return p == Provider::Foundry ? L"Foundry Local" : p == Provider::Ollama ? L"Ollama" : L"Servicio propio";
 }
 
-// Elige el modelo: el de la configuración, o el primero que ofrezca el
-// servicio, prefiriendo los hechos para la NPU.
+// Elige el modelo entre los que ofrece el servicio: los hechos para la NPU
+// primero y, entre ellos, los que responden rápido antes que los de
+// razonamiento (DeepSeek-R1 y compañía piensan mucho antes de contestar).
 static std::wstring PickModel(const std::vector<std::wstring>& ids) {
+    std::wstring best;
+    int bestScore = -1000;
     for (auto& id : ids) {
         std::wstring low = id;
         CharLowerBuffW(low.data(), (DWORD)low.size());
-        if (low.find(L"npu") != std::wstring::npos) return id;
+        auto has = [&](const wchar_t* t) { return low.find(t) != std::wstring::npos; };
+        int score = 0;
+        if (has(L"npu")) score += 100;
+        if (has(L"r1") || has(L"reason") || has(L"qwq") || has(L"think")) score -= 30;
+        if (has(L"phi") || has(L"mini")) score += 10;
+        if (score > bestScore) {
+            bestScore = score;
+            best = id;
+        }
     }
-    return ids.empty() ? L"" : ids.front();
+    return best;
+}
+
+// Todas las cadenas de un arreglo JSON (["a","b"]).
+static std::vector<std::wstring> JsonStrings(const std::string& j) {
+    std::vector<std::wstring> out;
+    for (size_t i = 0; i < j.size(); i++) {
+        if (j[i] != '"') continue;
+        std::string v;
+        if (!ParseJsonString(j, i, v)) break;
+        if (!v.empty()) out.push_back(FromUtf8(v));
+        i--;
+    }
+    return out;
+}
+
+// Raíz del servicio (sin el /v1 del final).
+static std::wstring ServiceRoot(const std::wstring& base) {
+    size_t p = base.rfind(L"/v1");
+    return p != std::wstring::npos && p + 3 == base.size() ? base.substr(0, p) : base;
+}
+
+static std::wstring UrlPart(const std::wstring& s) {
+    std::string u = ToUtf8(s), o;
+    for (unsigned char c : u) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            o += (char)c;
+        } else {
+            char b[4];
+            snprintf(b, sizeof(b), "%%%02X", c);
+            o += b;
+        }
+    }
+    return FromUtf8(o);
+}
+
+// Los modelos que Foundry Local ya tiene cargados (vacío si no lo dice).
+static std::vector<std::wstring> FoundryLoadedModels(const std::wstring& base, const std::wstring& key) {
+    HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/loadedmodels", "GET", "", key, nullptr, 10000);
+    if (!r.error.empty() || r.status != 200) return {};
+    size_t first = r.body.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    return r.body[first] == '[' ? JsonStrings(r.body) : JsonIds(r.body);
+}
+
+static bool IsNotLoadedError(std::wstring msg) {
+    CharLowerBuffW(msg.data(), (DWORD)msg.size());
+    return msg.find(L"not loaded") != std::wstring::npos || msg.find(L"must be loaded") != std::wstring::npos;
+}
+
+static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out);
+
+// Carga un modelo en Foundry Local: por su API y, si no, con el comando.
+static void LoadFoundryModel(const std::wstring& base, const std::wstring& model, const std::wstring& key) {
+    HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/load/" + UrlPart(model), "GET", "", key, nullptr, 600000);
+    if (r.error.empty() && r.status == 200) return;
+    std::string out;
+    RunFoundry(L"model load \"" + model + L"\"", 600000, out);
+    if (FoundryLoadedModels(base, key).empty()) {
+        // Algunas versiones lo quieren sin el número de versión (":4").
+        size_t colon = model.rfind(L':');
+        if (colon != std::wstring::npos) RunFoundry(L"model load \"" + model.substr(0, colon) + L"\"", 600000, out);
+    }
 }
 
 // Corre un comando de Foundry Local. Prueba "foundry" (en el PATH) y el
@@ -744,7 +817,9 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
             error = ServiceError(r);
             return false;
         }
-        b.model = PickModel(JsonIds(r.body));
+        std::vector<std::wstring> loaded;
+        if (st.provider == Provider::Foundry) loaded = FoundryLoadedModels(b.base, st.apiKey);
+        b.model = PickModel(loaded.empty() ? JsonIds(r.body) : loaded);
         if (b.model.empty()) {
             error = st.provider == Provider::Ollama
                         ? L"Ollama no tiene modelos. Descarga uno con «ollama pull llama3.2»."
@@ -778,6 +853,7 @@ struct AnswerState {
     std::wstring label;   // servicio · modelo
     bool done = false;
     bool waiting = false;  // todavía sin la primera palabra
+    std::wstring status;   // qué está haciendo (si tarda), por ejemplo cargar el modelo
     uint64_t gen = 0;      // de qué consulta es
 };
 
@@ -852,42 +928,49 @@ static DWORD WINAPI AskThread(LPVOID param) {
         return 0;
     }
     if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
-    std::string body = ChatBody(b.model, SystemPrompt(st), UserPrompt(job->action, job->text, job->question, st),
-                                st.maxTokens);
     SseReader sse;
     std::string whole;  // por si el servicio no responde por partes
     auto onText = [&](const std::wstring& t) {
-        UpdateAnswer([&](AnswerState& a) { a.raw += t; a.waiting = false; });
+        UpdateAnswer([&](AnswerState& a) { a.raw += t; a.waiting = false; a.status.clear(); });
     };
     auto onError = [&](const std::wstring& e) {
         UpdateAnswer([&](AnswerState& a) { a.error = e; });
     };
-    HttpResult r = HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey,
-                               [&](const char* p, size_t n) {
-                                   if (!current()) return false;
-                                   if (whole.size() < 1 << 20) whole.append(p, n);
-                                   return sse.Feed(p, n, onText, onError);
-                               },
-                               120000);
+    auto send = [&] {
+        std::string body = ChatBody(b.model, SystemPrompt(st), UserPrompt(job->action, job->text, job->question, st),
+                                    st.maxTokens);
+        whole.clear();
+        sse = SseReader{};
+        return HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey,
+                           [&](const char* p, size_t n) {
+                               if (!current()) return false;
+                               if (whole.size() < 1 << 20) whole.append(p, n);
+                               return sse.Feed(p, n, onText, onError);
+                           },
+                           120000);
+    };
+    HttpResult r = send();
     if (!current()) return 0;
+    bool foundry = st.provider == Provider::Foundry;
     // Foundry Local se apaga solo tras un rato sin uso (y vuelve en otro
     // puerto): se busca de nuevo y se reintenta una vez.
-    if (!r.error.empty() && r.status == 0 && st.provider == Provider::Foundry && st.endpoint.empty()) {
+    if (!r.error.empty() && r.status == 0 && foundry && st.endpoint.empty()) {
         ForgetBackend();
         if (ResolveBackend(st, b, error) && current()) {
             UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
-            body = ChatBody(b.model, SystemPrompt(st), UserPrompt(job->action, job->text, job->question, st),
-                            st.maxTokens);
-            whole.clear();
-            r = HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey,
-                            [&](const char* p, size_t n) {
-                                if (!current()) return false;
-                                if (whole.size() < 1 << 20) whole.append(p, n);
-                                return sse.Feed(p, n, onText, onError);
-                            },
-                            120000);
+            r = send();
             if (!current()) return 0;
         }
+    }
+    // Foundry ofrece todos los modelos descargados, pero solo responde con los
+    // cargados: se carga (la primera vez tarda) y se reintenta.
+    if (r.error.empty() && r.status != 200 && foundry && IsNotLoadedError(ServiceError(r))) {
+        UpdateAnswer([&](AnswerState& a) { a.status = L"Cargando el modelo (la primera vez tarda un poco)"; });
+        LoadFoundryModel(b.base, b.model, st.apiKey);
+        if (!current()) return 0;
+        UpdateAnswer([&](AnswerState& a) { a.status.clear(); });
+        r = send();
+        if (!current()) return 0;
     }
     if (!r.error.empty() || r.status != 200) {
         ForgetBackend();  // quizá cambió de puerto o se cerró: buscarlo de nuevo la próxima vez
@@ -1430,7 +1513,8 @@ static std::wstring AnswerText(const AnswerState& a, bool& isError, bool& isStat
     if (t.empty() && !a.done) {
         isStatus = true;
         static const wchar_t* kDots[] = {L"", L".", L"..", L"..."};
-        return std::wstring(thinking ? L"Pensando" : a.waiting ? L"Preguntando al modelo" : L"") + kDots[g_pop.dots % 4];
+        std::wstring what = thinking ? L"Pensando" : !a.status.empty() ? a.status : a.waiting ? L"Preguntando al modelo" : L"";
+        return what + kDots[g_pop.dots % 4];
     }
     if (t.empty()) {
         isStatus = true;

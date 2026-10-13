@@ -13,6 +13,13 @@ RESPUESTA = [
     "fue una serendipia.\n- Sinónimo: chiripa.",
 ]
 
+# Con "foundry" como segundo argumento imita a Foundry Local: ofrece modelos
+# descargados pero solo responde con los cargados (/openai/load/<modelo>).
+FOUNDRY = len(sys.argv) > 2 and sys.argv[2] == "foundry"
+CARGADOS = set()
+MODELOS = ["DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", "Phi-4-mini-instruct-openvino-npu:2", "phi-4-mini-cpu"] if FOUNDRY \
+    else ["phi-4-mini-cpu", "Phi-4-mini-instruct-qnn-npu:2"]
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -26,8 +33,16 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        from urllib.parse import unquote
         if self.path.endswith("/v1/models"):
-            self._json(200, {"object": "list", "data": [{"id": "phi-4-mini-cpu"}, {"id": "Phi-4-mini-instruct-qnn-npu:2"}]})
+            self._json(200, {"object": "list", "data": [{"id": m} for m in MODELOS]})
+        elif FOUNDRY and self.path == "/openai/loadedmodels":
+            self._json(200, sorted(CARGADOS))
+        elif FOUNDRY and self.path.startswith("/openai/load/"):
+            name = unquote(self.path[len("/openai/load/"):].split("?")[0])
+            CARGADOS.add(name)
+            open("cargado.txt", "w").write(name)
+            self._json(200, {})
         else:
             self._json(404, {"error": {"message": "no existe"}})
 
@@ -39,6 +54,10 @@ class H(BaseHTTPRequestHandler):
             self._json(500, {"error": {"message": "El modelo no está cargado"}})
             return
         req = json.loads(body)
+        if FOUNDRY and req.get("model") not in CARGADOS:
+            m = req.get("model")
+            self._json(400, {"error": {"message": f"Model not loaded: Model '{m}' must be loaded before inference"}})
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()

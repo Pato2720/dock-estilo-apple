@@ -11,6 +11,10 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 3) return 1;
     bool server = !wcscmp(argv[1], L"server"), service = !wcscmp(argv[1], L"service");
     bool status = !wcscmp(argv[2], L"status");
+    if (!wcscmp(mode, L"load") && server && status) {
+        printf("Foundry Local daemon: running\n  Local service: http://127.0.0.1:8766/v1\n");
+        return 0;
+    }
     if (!wcscmp(mode, L"new") && server && status) {
         printf("Foundry Local daemon: running (PID 4242)\n  Local service: http://127.0.0.1:8765/v1\n  Logs: C:\\logs\n");
         return 0;
