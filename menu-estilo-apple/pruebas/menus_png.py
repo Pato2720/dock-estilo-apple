@@ -28,15 +28,18 @@ def framed(img, dark, radius=8):
     out.paste(Image.new("RGBA", (w, h), (72, 72, 78, 255) if dark else (200, 200, 206, 255)), (m, m), border)
     return out
 
-names = [("menu-claro", False), ("menu-oscuro", True), ("menu-claro-acento", False), ("menu-oscuro-acento", True)]
-cards = [framed(load(n), d) for n, d in names]
+import glob
+files = sorted(glob.glob("out/[0-9]-*.bgra"))
+dark_of = lambda f: "oscuro" in f or "hielo" in f or "contraste" in f
+cards = [framed(load(os.path.basename(f)[:-5]), dark_of(f)) for f in files]
+cols = 3
+rows = (len(cards) + cols - 1) // cols
+cw, ch = cards[0].width, cards[0].height
+W, H = cols * cw + 20, rows * ch + 20
 wp = Image.open("../../herramientas/pruebas/fondo.png").convert("RGBA")
-W = sum(c.width for c in cards[:2]) + 30
-H = cards[0].height * 2 + 30
-sheet = wp.crop((400, 150, 400 + W, 150 + H)).copy()
-x = y = 10
-for i, c in enumerate(cards):
-    sheet.alpha_composite(c, (10 + (i % 2) * (cards[0].width + 10), 10 + (i // 2) * (cards[0].height + 10)))
+sheet = wp.resize((max(W, wp.width), max(H, wp.height))).crop((0, 0, W, H))
+for k, c in enumerate(cards):
+    sheet.alpha_composite(c, (10 + (k % cols) * cw, 10 + (k // cols) * ch))
 os.makedirs("png", exist_ok=True)
 sheet.convert("RGB").save("png/menus.png")
 print(sheet.size)

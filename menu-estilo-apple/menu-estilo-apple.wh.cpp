@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              menu-estilo-apple
 // @name            Menús estilo Apple
-// @description     Menús del clic derecho y desplegables con el estilo de macOS: esquinas redondeadas, resaltado en pastilla, marcas vectoriales y los colores del Dock
-// @version         1.1
+// @description     Menús del clic derecho y desplegables con el estilo de macOS, muy personalizables: paletas, formas del resaltado, marcas vectoriales, animaciones y más
+// @version         2.0
 // @author          local
 // @include         *
 // @compilerOptions -luxtheme -ldwmapi -lgdi32 -luser32 -ladvapi32
@@ -15,21 +15,37 @@
 Cambia el aspecto de los menús del clic derecho y de los menús desplegables
 (Archivo, Edición…) en el escritorio, el Explorador y las aplicaciones, para
 que se vean como los de macOS. Es un mod independiente: no necesita ningún
-otro. Usa los mismos colores que el menú de **Dock estilo Apple**, así que
-hacen juego si se usan juntos.
+otro. Con la paleta Grafito usa los mismos colores que el menú de **Dock
+estilo Apple**.
 
 ## Qué hace
 
-* **Fondo liso** gris claro u oscuro según el tema de cada menú (claro u
-  oscuro), sin la franja de los iconos a la izquierda.
-* **Resaltado en pastilla**: la opción bajo el mouse se marca con un
-  rectángulo redondeado, un poco separado de los bordes. Gris neutro (como
-  el menú del Dock) o con el color de acento de Windows y el texto en blanco.
-* **Marcas vectoriales** con antialias: palomita, punto de opción y flecha
-  de submenú, dibujadas al tamaño exacto en cualquier escala.
-* **Separadores** finos que no tocan los bordes.
-* **Esquinas** más redondeadas y un **borde** fino, como los de macOS.
+* **Fondo liso** claro u oscuro, sin la franja de los iconos a la izquierda
+  (se puede dejar).
+* **Resaltado** de la opción bajo el mouse en **gris claro** (o el color de
+  acento, o uno propio), con varias formas: pastilla redondeada, contorno,
+  barra lateral o el renglón completo. Redondeo, margen e intensidad a gusto.
+* **Paletas**: Grafito (la del Dock), Arena, Hielo y Alto contraste, o colores
+  propios para el fondo, el resaltado y el borde.
+* **Marcas vectoriales** con antialias: palomita, punto o casilla; flecha de
+  submenú fina, triángulo o ninguna.
+* **Separadores** en línea fina, línea gruesa, puntos o solo espacio.
+* **Atajos de teclado en gris** (Ctrl+C…), como en macOS.
+* **Esquinas** redondeadas y **borde** fino, del color que quieras.
 * Las opciones desactivadas se ven tenues y no se resaltan.
+
+## Funciones
+
+* **Tema** automático (el de cada menú) o siempre claro u oscuro.
+* **Animación** de los menús: la del sistema, desvanecer, deslizar o ninguna.
+* **Retraso de los submenús**: cuánto esperan antes de abrirse.
+* **Subrayar siempre las letras de acceso** (la A de _A_rchivo).
+* **Apps excluidas**: una lista de programas donde los menús quedan como
+  estaban.
+* **Menú clásico** en el escritorio y el Explorador (ver abajo).
+
+Las tres primeras se aplican a todo Windows mientras el mod está activo y
+vuelven como estaban al desactivarlo.
 
 ## El menú del escritorio y del Explorador
 
@@ -50,6 +66,8 @@ Explorador) antes de quitar el mod.
 * Funciona con los menús que dibuja Windows (casi todas las apps de
   escritorio). Las apps que dibujan sus propios menús (Chrome, Firefox,
   Office, apps de la Tienda) no cambian.
+* Con el tema forzado, si en alguna app el texto no se lee, vuelve a
+  Automático o excluye esa app.
 * En el registro de Windhawk (Registros del mod) aparece "Primer menú con
   estilo" en cada proceso donde ya se aplicó.
 */
@@ -57,11 +75,74 @@ Explorador) antes de quitar el mod.
 
 // ==WindhawkModSettings==
 /*
-- highlight: neutral
-  $name: Resaltado de la opción bajo el mouse
+- theme: auto
+  $name: Tema del menú
   $options:
-  - neutral: Gris neutro (como el menú del Dock)
+  - auto: Automático (el de cada menú)
+  - light: Siempre claro
+  - dark: Siempre oscuro
+- palette: graphite
+  $name: Paleta de colores
+  $options:
+  - graphite: Grafito (la del Dock)
+  - sand: Arena (cálida)
+  - ice: Hielo (fría)
+  - contrast: Alto contraste
+- lightBackground: ""
+  $name: Fondo propio para el tema claro
+  $description: Vacío = el de la paleta. Ejemplo #FAFAFA
+- darkBackground: ""
+  $name: Fondo propio para el tema oscuro
+  $description: Vacío = el de la paleta. Ejemplo #1E1E22
+- highlight: gray
+  $name: Color del resaltado
+  $options:
+  - gray: Gris claro
   - accent: Color de acento de Windows, con el texto en blanco
+  - custom: Color propio
+- highlightColor: "#0A84FF"
+  $name: Color propio del resaltado
+  $description: Solo con "Color propio". El texto encima se pone blanco o negro según se lea mejor
+- highlightIntensity: 100
+  $name: Intensidad del resaltado (%)
+  $description: 100 = normal; más, más marcado (hasta 300)
+- highlightShape: pill
+  $name: Forma del resaltado
+  $options:
+  - pill: Pastilla redondeada
+  - outline: Contorno
+  - bar: Barra lateral
+  - full: Renglón completo
+- highlightRadius: 6
+  $name: Redondeo del resaltado
+  $description: En píxeles a escala de 100 % (0 a 14)
+- highlightMargin: 5
+  $name: Separación del resaltado con los bordes
+  $description: En píxeles a escala de 100 % (0 a 12)
+- separator: line
+  $name: Separadores
+  $options:
+  - line: Línea fina
+  - thick: Línea gruesa
+  - dots: Puntos
+  - space: Solo espacio
+- checkStyle: check
+  $name: Opciones marcadas
+  $options:
+  - check: Palomita
+  - dot: Punto
+  - box: Casilla
+- arrowStyle: chevron
+  $name: Flecha de los submenús
+  $options:
+  - chevron: Fina
+  - triangle: Triángulo
+  - none: Ninguna
+- dimShortcuts: true
+  $name: Atajos de teclado en gris
+  $description: Ctrl+C, Ctrl+V… más tenues que el nombre, como en macOS
+- showGutter: false
+  $name: Mostrar la franja de los iconos
 - corners: round
   $name: Esquinas del menú
   $options:
@@ -70,9 +151,29 @@ Explorador) antes de quitar el mod.
   - square: Rectas
 - border: true
   $name: Borde fino alrededor del menú
+- borderColor: ""
+  $name: Color del borde
+  $description: Vacío = según la paleta. Ejemplo #8E8E93
 - menuBar: true
   $name: Resaltar también la barra de menús de las apps
   $description: Archivo, Edición… en las apps clásicas
+- animation: system
+  $name: Animación al abrir los menús
+  $description: Para todo Windows mientras el mod está activo
+  $options:
+  - system: La del sistema
+  - fade: Desvanecer
+  - slide: Deslizar
+  - none: Ninguna (aparecen al instante)
+- submenuDelay: -1
+  $name: Retraso de los submenús (ms)
+  $description: Cuánto esperan antes de abrirse. -1 = el del sistema (Windows usa 400)
+- accessKeys: false
+  $name: Subrayar siempre las letras de acceso
+  $description: La A de Archivo, sin tener que pulsar Alt
+- excludedApps: ""
+  $name: Apps excluidas
+  $description: Programas donde los menús quedan como estaban, separados por punto y coma. Ejemplo chrome.exe; code.exe
 - classicExplorer: true
   $name: Menú clásico en el escritorio y el Explorador
   $description: El menú nuevo de Windows 11 no se puede restilar; con esto se usa el completo de siempre. Reinicia el Explorador después de cambiarla
@@ -90,6 +191,7 @@ Explorador) antes de quitar el mod.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cwctype>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -125,15 +227,57 @@ constexpr ATOM kMenuClassAtom = 0x8000;  // #32768, la clase de los menús
 static const wchar_t kClassicMenuKey[] = L"Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}";
 
 // ---------------------------------------------------------------------------
-// Configuración (se lee en un hilo y se usa al dibujar en otros: atómicos)
+// Configuración
 // ---------------------------------------------------------------------------
+// Se lee en el hilo de Windhawk y se usa al dibujar en los hilos de cada app:
+// se guarda entera bajo un candado y se copia al usarla (son pocos bytes).
 
-static std::atomic<bool> g_accent{false};
-static std::atomic<DWORD> g_corners{kCornerRound};
-static std::atomic<bool> g_border{true};
-static std::atomic<bool> g_menuBar{true};
-static std::atomic<bool> g_classicExplorer{true};
-static std::atomic<UINT> g_settingsGen{1};  // cambia con cada configuración nueva
+enum class ThemeMode { Auto, Light, Dark };
+enum class PaletteKind { Graphite, Sand, Ice, Contrast };
+enum class HiliteColor { Gray, Accent, Custom };
+enum class HiliteShape { Pill, Outline, Bar, Full };
+enum class SepStyle { Line, Thick, Dots, Space };
+enum class CheckStyle { Check, Dot, Box };
+enum class ArrowStyle { Chevron, Triangle, None };
+enum class Animation { System, Fade, Slide, None };
+
+constexpr COLORREF kNoColor = CLR_INVALID;
+
+struct Style {
+    ThemeMode theme = ThemeMode::Auto;
+    PaletteKind palette = PaletteKind::Graphite;
+    COLORREF lightBg = kNoColor, darkBg = kNoColor;
+    HiliteColor hilite = HiliteColor::Gray;
+    COLORREF hiliteColor = RGB(10, 132, 255);
+    float intensity = 1.0f;
+    HiliteShape shape = HiliteShape::Pill;
+    float radius = 6, margin = 5;  // px a 100 %
+    SepStyle separator = SepStyle::Line;
+    CheckStyle check = CheckStyle::Check;
+    ArrowStyle arrow = ArrowStyle::Chevron;
+    bool dimShortcuts = true;
+    bool gutter = false;
+    DWORD corners = kCornerRound;
+    bool border = true;
+    COLORREF borderColor = kNoColor;
+    bool menuBar = true;
+    // Funciones (solo las aplica el Explorador)
+    Animation animation = Animation::System;
+    int submenuDelay = -1;
+    bool accessKeys = false;
+    bool classicExplorer = true;
+    UINT gen = 1;  // cambia con cada configuración nueva
+};
+
+static SRWLOCK g_styleLock = SRWLOCK_INIT;
+static Style g_style;
+
+static Style CurrentStyle() {
+    AcquireSRWLockShared(&g_styleLock);
+    Style st = g_style;
+    ReleaseSRWLockShared(&g_styleLock);
+    return st;
+}
 
 static std::wstring StringSetting(PCWSTR name) {
     PCWSTR s = Wh_GetStringSetting(name);
@@ -142,25 +286,77 @@ static std::wstring StringSetting(PCWSTR name) {
     return r;
 }
 
+// "#RRGGBB", "RRGGBB" o "#RGB"; kNoColor si está vacío o no se entiende.
+static COLORREF ParseColor(std::wstring s) {
+    s.erase(std::remove_if(s.begin(), s.end(), [](wchar_t c) { return c == L' ' || c == L'#'; }), s.end());
+    if (s.size() == 3) s = {s[0], s[0], s[1], s[1], s[2], s[2]};
+    if (s.size() != 6 || !std::all_of(s.begin(), s.end(), iswxdigit)) return kNoColor;
+    unsigned v = (unsigned)wcstoul(s.c_str(), nullptr, 16);
+    return RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+}
+
 static void LoadSettings() {
-    g_accent = StringSetting(L"highlight") == L"accent";
+    Style st;
+    std::wstring t = StringSetting(L"theme");
+    st.theme = t == L"light" ? ThemeMode::Light : t == L"dark" ? ThemeMode::Dark : ThemeMode::Auto;
+    std::wstring pal = StringSetting(L"palette");
+    st.palette = pal == L"sand"       ? PaletteKind::Sand
+                 : pal == L"ice"      ? PaletteKind::Ice
+                 : pal == L"contrast" ? PaletteKind::Contrast
+                                      : PaletteKind::Graphite;
+    st.lightBg = ParseColor(StringSetting(L"lightBackground"));
+    st.darkBg = ParseColor(StringSetting(L"darkBackground"));
+    std::wstring h = StringSetting(L"highlight");
+    st.hilite = h == L"accent" ? HiliteColor::Accent : h == L"custom" ? HiliteColor::Custom : HiliteColor::Gray;
+    COLORREF hc = ParseColor(StringSetting(L"highlightColor"));
+    if (hc != kNoColor) st.hiliteColor = hc;
+    st.intensity = std::clamp(Wh_GetIntSetting(L"highlightIntensity"), 10, 300) / 100.0f;
+    std::wstring sh = StringSetting(L"highlightShape");
+    st.shape = sh == L"outline" ? HiliteShape::Outline
+               : sh == L"bar"   ? HiliteShape::Bar
+               : sh == L"full"  ? HiliteShape::Full
+                                : HiliteShape::Pill;
+    st.radius = (float)std::clamp(Wh_GetIntSetting(L"highlightRadius"), 0, 14);
+    st.margin = (float)std::clamp(Wh_GetIntSetting(L"highlightMargin"), 0, 12);
+    std::wstring sp = StringSetting(L"separator");
+    st.separator = sp == L"thick" ? SepStyle::Thick : sp == L"dots" ? SepStyle::Dots
+                 : sp == L"space" ? SepStyle::Space : SepStyle::Line;
+    std::wstring ck = StringSetting(L"checkStyle");
+    st.check = ck == L"dot" ? CheckStyle::Dot : ck == L"box" ? CheckStyle::Box : CheckStyle::Check;
+    std::wstring ar = StringSetting(L"arrowStyle");
+    st.arrow = ar == L"triangle" ? ArrowStyle::Triangle : ar == L"none" ? ArrowStyle::None : ArrowStyle::Chevron;
+    st.dimShortcuts = Wh_GetIntSetting(L"dimShortcuts") != 0;
+    st.gutter = Wh_GetIntSetting(L"showGutter") != 0;
     std::wstring c = StringSetting(L"corners");
-    g_corners = c == L"square" ? kCornerSquare : c == L"small" ? kCornerSmall : kCornerRound;
-    g_border = Wh_GetIntSetting(L"border") != 0;
-    g_menuBar = Wh_GetIntSetting(L"menuBar") != 0;
-    g_classicExplorer = Wh_GetIntSetting(L"classicExplorer") != 0;
-    g_settingsGen++;
+    st.corners = c == L"square" ? kCornerSquare : c == L"small" ? kCornerSmall : kCornerRound;
+    st.border = Wh_GetIntSetting(L"border") != 0;
+    st.borderColor = ParseColor(StringSetting(L"borderColor"));
+    st.menuBar = Wh_GetIntSetting(L"menuBar") != 0;
+    std::wstring an = StringSetting(L"animation");
+    st.animation = an == L"fade"    ? Animation::Fade
+                   : an == L"slide" ? Animation::Slide
+                   : an == L"none"  ? Animation::None
+                                    : Animation::System;
+    st.submenuDelay = std::clamp(Wh_GetIntSetting(L"submenuDelay"), -1, 5000);
+    st.accessKeys = Wh_GetIntSetting(L"accessKeys") != 0;
+    st.classicExplorer = Wh_GetIntSetting(L"classicExplorer") != 0;
+    AcquireSRWLockExclusive(&g_styleLock);
+    st.gen = g_style.gen + 1;
+    g_style = st;
+    ReleaseSRWLockExclusive(&g_styleLock);
 }
 
 // ---------------------------------------------------------------------------
-// Colores (los mismos del menú del Dock)
+// Colores
 // ---------------------------------------------------------------------------
 
 struct Palette {
+    bool dark;
     COLORREF bg, text, dim, hotText;
     COLORREF hilite;
     float hiliteA;
     COLORREF sep;     // línea del separador, ya mezclada con el fondo
+    COLORREF gutter;  // franja de los iconos (si se muestra)
     COLORREF border;  // borde de la ventana (DWM)
 };
 
@@ -193,23 +389,64 @@ static COLORREF AccentColor() {
     return result;
 }
 
-static Palette MakePalette(bool dark) {
-    Palette p;
-    p.bg = dark ? RGB(36, 36, 40) : RGB(246, 246, 248);
-    p.text = dark ? RGB(242, 242, 245) : RGB(28, 28, 30);
-    p.dim = dark ? RGB(140, 140, 146) : RGB(150, 150, 156);
-    if (g_accent) {
-        p.hilite = AccentColor();
-        p.hiliteA = 1.0f;
-        p.hotText = RGB(255, 255, 255);
-    } else {
-        // Resaltado gris neutro, como el menú del Dock.
-        p.hilite = dark ? RGB(255, 255, 255) : RGB(0, 0, 0);
-        p.hiliteA = dark ? 40 / 255.0f : 24 / 255.0f;
-        p.hotText = p.text;
+// Fondo, texto y texto tenue de cada paleta, en claro y en oscuro.
+struct BaseColors {
+    COLORREF bg, text, dim;
+};
+
+static BaseColors PaletteColors(PaletteKind k, bool dark) {
+    switch (k) {
+        case PaletteKind::Sand:
+            return dark ? BaseColors{RGB(40, 36, 32), RGB(244, 238, 228), RGB(150, 140, 128)}
+                        : BaseColors{RGB(250, 247, 240), RGB(40, 34, 28), RGB(160, 150, 138)};
+        case PaletteKind::Ice:
+            return dark ? BaseColors{RGB(28, 32, 40), RGB(236, 242, 250), RGB(130, 140, 156)}
+                        : BaseColors{RGB(244, 247, 251), RGB(24, 30, 40), RGB(140, 150, 166)};
+        case PaletteKind::Contrast:
+            return dark ? BaseColors{RGB(14, 14, 16), RGB(255, 255, 255), RGB(165, 165, 170)}
+                        : BaseColors{RGB(255, 255, 255), RGB(0, 0, 0), RGB(105, 105, 110)};
+        default:  // Grafito: los del menú del Dock
+            return dark ? BaseColors{RGB(36, 36, 40), RGB(242, 242, 245), RGB(140, 140, 146)}
+                        : BaseColors{RGB(246, 246, 248), RGB(28, 28, 30), RGB(150, 150, 156)};
     }
-    p.sep = Mix(p.bg, dark ? RGB(255, 255, 255) : RGB(0, 0, 0), dark ? 40 / 255.0f : 30 / 255.0f);
-    p.border = dark ? RGB(72, 72, 78) : RGB(200, 200, 206);
+}
+
+static Palette MakePalette(const Style& st, bool dark) {
+    // Un fondo propio decide por sí mismo si el texto va claro u oscuro.
+    COLORREF own = dark ? st.darkBg : st.lightBg;
+    if (own != kNoColor) dark = Luma(own) < 128;
+    BaseColors b = PaletteColors(st.palette, dark);
+    Palette p;
+    p.dark = dark;
+    p.bg = own != kNoColor ? own : b.bg;
+    p.text = b.text;
+    p.dim = b.dim;
+    p.hotText = p.text;
+    switch (st.hilite) {
+        case HiliteColor::Accent:
+            p.hilite = AccentColor();
+            p.hiliteA = std::min(1.0f, st.intensity);
+            p.hotText = RGB(255, 255, 255);
+            break;
+        case HiliteColor::Custom: {
+            p.hilite = st.hiliteColor;
+            p.hiliteA = std::min(1.0f, st.intensity);
+            // Blanco o negro encima, según se lea mejor.
+            p.hotText = Luma(Mix(p.bg, p.hilite, p.hiliteA)) > 150 ? RGB(20, 20, 22) : RGB(255, 255, 255);
+            break;
+        }
+        default:
+            // Gris claro: el del menú del Dock (negro o blanco muy suave
+            // encima del fondo).
+            p.hilite = dark ? RGB(255, 255, 255) : RGB(0, 0, 0);
+            p.hiliteA = std::min(1.0f, (dark ? 40 / 255.0f : 24 / 255.0f) * st.intensity);
+            break;
+    }
+    // Con contorno o barra el texto queda sobre el fondo: su color normal.
+    if (st.shape == HiliteShape::Outline || st.shape == HiliteShape::Bar) p.hotText = p.text;
+    p.sep = Mix(p.bg, p.text, dark ? 0.16f : 0.12f);
+    p.gutter = Mix(p.bg, p.text, 0.035f);
+    p.border = st.borderColor != kNoColor ? st.borderColor : Mix(p.bg, p.text, dark ? 0.2f : 0.18f);
     return p;
 }
 
@@ -320,11 +557,11 @@ static bool MenuTheme(HTHEME t, HDC hdc, bool& dark) {
         }
         return MenuTheme(t, hdc, dark);
     }
-    if (info.menu && !g_loggedFirst.exchange(true)) {
-        Wh_Log(L"Primer menú con estilo (tema %s)", info.dark ? L"oscuro" : L"claro");
-    }
-    dark = info.dark;
-    return info.menu;
+    if (!info.menu) return false;
+    if (!g_loggedFirst.exchange(true)) Wh_Log(L"Primer menú con estilo (tema %s)", info.dark ? L"oscuro" : L"claro");
+    ThemeMode mode = CurrentStyle().theme;
+    dark = mode == ThemeMode::Auto ? info.dark : mode == ThemeMode::Dark;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +572,8 @@ static SRWLOCK g_wndLock = SRWLOCK_INIT;
 static std::unordered_map<HWND, UINT> g_styled;  // ventana -> configuración con la que se arregló
 
 static void StyleMenuWindow(HWND h, bool dark) {
-    UINT want = g_settingsGen * 2 + (dark ? 1 : 0);
+    Style st = CurrentStyle();
+    UINT want = st.gen * 2 + (dark ? 1 : 0);
     AcquireSRWLockExclusive(&g_wndLock);
     auto it = g_styled.find(h);
     bool done = it != g_styled.end() && it->second == want;
@@ -347,9 +585,9 @@ static void StyleMenuWindow(HWND h, bool dark) {
     }
     ReleaseSRWLockExclusive(&g_wndLock);
     if (done) return;
-    DWORD corner = g_corners;
+    DWORD corner = st.corners;
     DwmSetWindowAttribute(h, kDwmCornerPreference, &corner, sizeof(corner));
-    COLORREF border = g_border ? MakePalette(dark).border : kDwmColorNone;
+    COLORREF border = st.border ? MakePalette(st, dark).border : kDwmColorNone;
     DwmSetWindowAttribute(h, kDwmBorderColor, &border, sizeof(border));
 }
 
@@ -485,6 +723,52 @@ static void StrokePolyline(Canvas& cv, const float* pts, int n, float width, COL
     }
 }
 
+// Contorno de un rectángulo redondeado (por dentro de su borde).
+static void StrokeRoundRect(Canvas& cv, float x0, float y0, float w, float h, float r, float width, COLORREF c,
+                            float alpha) {
+    if (!cv.bits || w <= 0 || h <= 0) return;
+    float cx = x0 + w / 2, cy = y0 + h / 2, hw = w / 2, hh = h / 2;
+    r = std::min(r, std::min(hw, hh));
+    int ix0 = std::max(0, (int)std::floor(x0)), ix1 = std::min(cv.w, (int)std::ceil(x0 + w));
+    int iy0 = std::max(0, (int)std::floor(y0)), iy1 = std::min(cv.h, (int)std::ceil(y0 + h));
+    for (int y = iy0; y < iy1; y++) {
+        for (int x = ix0; x < ix1; x++) {
+            float d = RoundRectSdf(x + 0.5f, y + 0.5f, cx, cy, hw, hh, r);
+            float cov = std::clamp(width / 2 + 0.5f - std::fabs(d + width / 2), 0.0f, 1.0f);
+            Plot(cv, x, y, cov * alpha, c);
+        }
+    }
+}
+
+// Triángulo relleno, con antialias por muestreo (4 × 4 por píxel).
+static void FillTriangle(Canvas& cv, const float* p, COLORREF c) {
+    if (!cv.bits) return;
+    auto edge = [](float ax, float ay, float bx, float by, float x, float y) {
+        return (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    };
+    float area = edge(p[0], p[1], p[2], p[3], p[4], p[5]);
+    if (std::fabs(area) < 1e-3f) return;
+    float sign = area > 0 ? 1.0f : -1.0f;
+    int x0 = std::max(0, (int)std::floor(std::min({p[0], p[2], p[4]})));
+    int x1 = std::min(cv.w, (int)std::ceil(std::max({p[0], p[2], p[4]})));
+    int y0 = std::max(0, (int)std::floor(std::min({p[1], p[3], p[5]})));
+    int y1 = std::min(cv.h, (int)std::ceil(std::max({p[1], p[3], p[5]})));
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            int in = 0;
+            for (int sy = 0; sy < 4; sy++) {
+                for (int sx = 0; sx < 4; sx++) {
+                    float px = x + (sx + 0.5f) / 4, py = y + (sy + 0.5f) / 4;
+                    in += sign * edge(p[0], p[1], p[2], p[3], px, py) >= 0 &&
+                          sign * edge(p[2], p[3], p[4], p[5], px, py) >= 0 &&
+                          sign * edge(p[4], p[5], p[0], p[1], px, py) >= 0;
+                }
+            }
+            Plot(cv, x, y, in / 16.0f, c);
+        }
+    }
+}
+
 // Rellena un rectángulo con un color liso (sin crear pinceles).
 static void FillSolid(HDC hdc, const RECT& rc, COLORREF c) {
     COLORREF old = SetBkColor(hdc, c);
@@ -562,46 +846,141 @@ static void FillFrame(HDC hdc, const RECT& rc, int t, COLORREF c) {
     FillSolid(hdc, RECT{rc.right - t, rc.top + t, rc.right, rc.bottom - t}, c);
 }
 
-// Resaltado en pastilla dentro del cuadro de la opción.
-static void DrawHilite(HDC hdc, const RECT& rc, float s, const Palette& p, float insetX, float insetY) {
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
-    Canvas cv(w, h);
-    float ix = std::min(insetX * s, w / 4.0f), iy = std::min(insetY * s, h / 4.0f);
-    FillRoundRect(cv, ix, iy, w - 2 * ix, h - 2 * iy, 5.0f * s, p.hilite, p.hiliteA);
-    cv.Present(hdc, rc.left, rc.top);
+// Franja de los iconos que se pintó en este hilo (para respetarla al pintar
+// cada opción encima, si se muestra).
+struct GutterSpan {
+    DWORD tid = 0;
+    HDC dc = nullptr;
+    LONG left = 0, right = 0;
+};
+static SRWLOCK g_gutterLock = SRWLOCK_INIT;
+static GutterSpan g_gutterSpan;
+
+static void RememberGutter(HDC hdc, const RECT& rc) {
+    AcquireSRWLockExclusive(&g_gutterLock);
+    g_gutterSpan = GutterSpan{GetCurrentThreadId(), hdc, rc.left, rc.right};
+    ReleaseSRWLockExclusive(&g_gutterLock);
 }
 
-// Palomita o punto de opción, centrados en su cuadro.
-static void DrawCheckMark(HDC hdc, const RECT& rc, float s, bool bullet, COLORREF c) {
+// Fondo de una opción; con la franja visible, su tramo va en su color.
+static void FillItemBackground(HDC hdc, const RECT& rc, const Style& st, const Palette& p) {
+    FillSolid(hdc, rc, p.bg);
+    if (!st.gutter) return;
+    AcquireSRWLockShared(&g_gutterLock);
+    GutterSpan g = g_gutterSpan;
+    ReleaseSRWLockShared(&g_gutterLock);
+    if (g.tid != GetCurrentThreadId() || g.dc != hdc) return;
+    RECT band{std::max(rc.left, g.left), rc.top, std::min(rc.right, g.right), rc.bottom};
+    if (band.right > band.left) FillSolid(hdc, band, p.gutter);
+}
+
+// Resaltado de la opción bajo el mouse, con la forma elegida.
+static void DrawHilite(HDC hdc, const RECT& rc, float s, const Style& st, const Palette& p) {
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
     Canvas cv(w, h);
-    float cx = w / 2.0f, cy = h / 2.0f, g = std::min(10.0f * s, std::min(w, h) * 0.62f);
-    if (bullet) {
-        FillDot(cv, cx, cy, g * 0.26f, c);
-    } else {
-        float pts[] = {cx - g * 0.42f, cy + g * 0.02f, cx - g * 0.12f, cy + g * 0.32f, cx + g * 0.44f, cy - g * 0.34f};
-        StrokePolyline(cv, pts, 3, std::max(1.5f * s, g * 0.16f), c);
+    bool full = st.shape == HiliteShape::Full;
+    float ix = full ? 0 : std::min(st.margin * s, w / 4.0f), iy = full ? 0 : std::min(1.0f * s, h / 4.0f);
+    float bw = w - 2 * ix, bh = h - 2 * iy, r = full ? 0 : st.radius * s;
+    switch (st.shape) {
+        case HiliteShape::Outline:
+            StrokeRoundRect(cv, ix, iy, bw, bh, r, std::max(1.0f, 1.25f * s), p.hilite, std::min(1.0f, p.hiliteA * 3));
+            break;
+        case HiliteShape::Bar: {
+            // Un tinte suave y una barrita vertical a la izquierda.
+            FillRoundRect(cv, ix, iy, bw, bh, r, p.hilite, st.hilite == HiliteColor::Gray ? p.hiliteA : p.hiliteA * 0.18f);
+            float barW = std::max(2.0f, 3.0f * s), pad = std::min(4.0f * s, bh / 4);
+            COLORREF bar = st.hilite == HiliteColor::Gray ? p.text : p.hilite;
+            FillRoundRect(cv, ix + 3.0f * s, iy + pad, barW, bh - 2 * pad, barW / 2, bar,
+                          st.hilite == HiliteColor::Gray ? 0.55f : 1.0f);
+            break;
+        }
+        default:
+            FillRoundRect(cv, ix, iy, bw, bh, r, p.hilite, p.hiliteA);
+            break;
     }
     cv.Present(hdc, rc.left, rc.top);
 }
 
-// Flecha de submenú (un ángulo fino, como en macOS).
-static void DrawChevron(HDC hdc, const RECT& rc, float s, COLORREF c) {
+// Separador con el estilo elegido (el fondo ya está pintado).
+static void DrawSeparator(HDC hdc, const RECT& rc, float s, const Style& st, const Palette& p) {
+    int inset = (int)std::lround(10 * s);
+    RECT span{rc.left + inset, rc.top, rc.right - inset, rc.bottom};
+    if (span.right <= span.left) return;
+    switch (st.separator) {
+        case SepStyle::Space:
+            return;
+        case SepStyle::Dots: {
+            Canvas cv(span.right - span.left, rc.bottom - rc.top);
+            float step = std::max(4.0f, 5.0f * s), r = std::max(0.8f, 0.9f * s), cy = cv.h / 2.0f;
+            for (float x = r + 0.5f; x < cv.w - r; x += step) FillDot(cv, x, cy, r, Mix(p.bg, p.text, 0.35f));
+            cv.Present(hdc, span.left, span.top);
+            return;
+        }
+        default: {
+            bool thick = st.separator == SepStyle::Thick;
+            int th = thick ? std::max(2, (int)std::lround(2 * s)) : std::max(1, (int)std::lround(s));
+            int y = (rc.top + rc.bottom - th) / 2;
+            FillSolid(hdc, RECT{span.left, y, span.right, y + th}, thick ? Mix(p.bg, p.text, 0.22f) : p.sep);
+            return;
+        }
+    }
+}
+
+// Opción marcada (palomita, punto o casilla) o de grupo (punto), centrada.
+static void DrawCheckMark(HDC hdc, const RECT& rc, float s, const Style& st, bool bullet, COLORREF c, COLORREF bg) {
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
     Canvas cv(w, h);
+    float cx = w / 2.0f, cy = h / 2.0f, g = std::min(10.0f * s, std::min(w, h) * 0.62f);
+    auto check = [&](float k, COLORREF col) {
+        float pts[] = {cx - g * 0.42f * k, cy + g * 0.02f * k, cx - g * 0.12f * k, cy + g * 0.32f * k,
+                       cx + g * 0.44f * k, cy - g * 0.34f * k};
+        StrokePolyline(cv, pts, 3, std::max(1.5f * s, g * 0.16f) * std::min(1.0f, k + 0.1f), col);
+    };
+    switch (st.check) {
+        case CheckStyle::Box:
+            if (bullet) {
+                FillDot(cv, cx, cy, g * 0.55f, c);
+                FillDot(cv, cx, cy, g * 0.2f, bg);
+            } else {
+                float side = g * 1.15f;
+                FillRoundRect(cv, cx - side / 2, cy - side / 2, side, side, side * 0.24f, c, 1.0f);
+                check(0.72f, bg);
+            }
+            break;
+        case CheckStyle::Dot:
+            FillDot(cv, cx, cy, g * (bullet ? 0.26f : 0.3f), c);
+            break;
+        default:
+            if (bullet) FillDot(cv, cx, cy, g * 0.26f, c);
+            else check(1.0f, c);
+            break;
+    }
+    cv.Present(hdc, rc.left, rc.top);
+}
+
+// Flecha de submenú: un ángulo fino (como en macOS) o un triángulo.
+static void DrawArrow(HDC hdc, const RECT& rc, float s, const Style& st, COLORREF c) {
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0 || st.arrow == ArrowStyle::None) return;
+    Canvas cv(w, h);
     float cx = w / 2.0f, cy = h / 2.0f, g = std::min(9.0f * s, std::min(w, h) * 0.6f);
-    float pts[] = {cx - g * 0.18f, cy - g * 0.40f, cx + g * 0.22f, cy, cx - g * 0.18f, cy + g * 0.40f};
-    StrokePolyline(cv, pts, 3, std::max(1.4f * s, g * 0.15f), c);
+    if (st.arrow == ArrowStyle::Triangle) {
+        float pts[] = {cx - g * 0.22f, cy - g * 0.42f, cx + g * 0.3f, cy, cx - g * 0.22f, cy + g * 0.42f};
+        FillTriangle(cv, pts, c);
+    } else {
+        float pts[] = {cx - g * 0.18f, cy - g * 0.40f, cx + g * 0.22f, cy, cx - g * 0.18f, cy + g * 0.40f};
+        StrokePolyline(cv, pts, 3, std::max(1.4f * s, g * 0.15f), c);
+    }
     cv.Present(hdc, rc.left, rc.top);
 }
 
 // Pinta una parte del menú con el estilo propio. false = que la dibuje el tema.
 static bool PaintMenuPart(HDC hdc, int part, int state, const RECT& rc, const RECT* clip, bool dark) {
     if (rc.right <= rc.left || rc.bottom <= rc.top) return false;
-    Palette p = MakePalette(dark);
+    Style st = CurrentStyle();
+    Palette p = MakePalette(st, dark);
     float s = ScaleOf(hdc);
     ClipScope scope(hdc, clip);
     switch (part) {
@@ -613,24 +992,21 @@ static bool PaintMenuPart(HDC hdc, int part, int state, const RECT& rc, const RE
             // Solo el marco: el centro ya tiene las opciones.
             FillFrame(hdc, rc, FrameThickness(hdc, s), p.bg);
             return true;
-        case kPopupGutter:  // sin franja de iconos a la izquierda
-            FillSolid(hdc, rc, p.bg);
+        case kPopupGutter:
+            RememberGutter(hdc, rc);
+            FillSolid(hdc, rc, st.gutter ? p.gutter : p.bg);
             return true;
         case kPopupCheckBackground:  // sin recuadro detrás de la palomita
             return true;
-        case kPopupSeparator: {
-            FillSolid(hdc, rc, p.bg);
-            int inset = (int)std::lround(10 * s), th = std::max(1, (int)std::lround(s));
-            int y = (rc.top + rc.bottom - th) / 2;
-            RECT line{rc.left + inset, y, rc.right - inset, y + th};
-            if (line.right > line.left) FillSolid(hdc, line, p.sep);
+        case kPopupSeparator:
+            FillItemBackground(hdc, rc, st, p);
+            DrawSeparator(hdc, rc, s, st, p);
             return true;
-        }
         case kPopupItem:
         case kPopupItemFocusable: {
-            FillSolid(hdc, rc, p.bg);
+            FillItemBackground(hdc, rc, st, p);
             if (state == 2) {  // las desactivadas no se resaltan (como en macOS)
-                DrawHilite(hdc, rc, s, p, 5.0f, 1.0f);
+                DrawHilite(hdc, rc, s, st, p);
                 SetHotItem(hdc, &rc);
             } else if (OnHotItem(hdc, rc)) {
                 SetHotItem(hdc, nullptr);
@@ -639,22 +1015,29 @@ static bool PaintMenuPart(HDC hdc, int part, int state, const RECT& rc, const RE
         }
         case kPopupCheck: {
             bool disabled = state == 2 || state == 4;
-            COLORREF c = disabled ? p.dim : OnHotItem(hdc, rc) ? p.hotText : p.text;
-            DrawCheckMark(hdc, rc, s, state >= 3, c);
+            bool hot = OnHotItem(hdc, rc);
+            COLORREF c = disabled ? p.dim : hot ? p.hotText : p.text;
+            // La casilla "hueca" toma el color de lo que tiene detrás.
+            COLORREF behind = hot && p.hotText != p.text ? Mix(p.bg, p.hilite, p.hiliteA) : p.bg;
+            DrawCheckMark(hdc, rc, s, st, state >= 3, c, behind);
             return true;
         }
         case kPopupSubmenu: {
             COLORREF c = state == 2 ? p.dim : OnHotItem(hdc, rc) ? p.hotText : p.text;
-            DrawChevron(hdc, rc, s, c);
+            DrawArrow(hdc, rc, s, st, c);
             return true;
         }
-        case kBarItem:
-            // Barra de menús: solo el resaltado, sobre el fondo que ya tenga.
-            if (!g_menuBar || (state != 2 && state != 3)) return false;
-            p.hilite = dark ? RGB(255, 255, 255) : RGB(0, 0, 0);
-            p.hiliteA = dark ? 40 / 255.0f : 24 / 255.0f;
-            DrawHilite(hdc, rc, s, p, 2.0f, 2.0f);
+        case kBarItem: {
+            // Barra de menús: solo el resaltado (gris claro, en pastilla),
+            // sobre el fondo que ya tenga.
+            if (!st.menuBar || (state != 2 && state != 3)) return false;
+            Style bar = st;
+            bar.hilite = HiliteColor::Gray;
+            bar.shape = HiliteShape::Pill;
+            bar.margin = 2;
+            DrawHilite(hdc, rc, s, bar, MakePalette(bar, dark));
             return true;
+        }
     }
     return false;
 }
@@ -663,17 +1046,20 @@ static bool IsStyledPart(int part) {
     return (part >= kBarItem && part <= kPopupSubmenu) || part == kPopupItemFocusable;
 }
 
-// Color del texto de una opción según su estado.
-static COLORREF ItemTextColor(int state, bool dark) {
-    Palette p = MakePalette(dark);
+// Color del texto de una opción según su estado. shortcut = el atajo de
+// teclado (Windows lo dibuja aparte, alineado a la derecha).
+static COLORREF ItemTextColor(int state, bool dark, bool shortcut) {
+    Style st = CurrentStyle();
+    Palette p = MakePalette(st, dark);
+    bool dimmed = shortcut && st.dimShortcuts;
     switch (state) {
         case 2:
-            return p.hotText;
+            return p.hotText != p.text ? p.hotText : dimmed ? p.dim : p.text;
         case 3:
         case 4:
             return p.dim;
         default:
-            return p.text;
+            return dimmed ? p.dim : p.text;
     }
 }
 
@@ -752,7 +1138,7 @@ static HRESULT WINAPI DrawThemeTextEx_Hook(HTHEME t, HDC hdc, int part, int stat
         if (opts) memcpy(&o, opts, std::min<size_t>(opts->dwSize, sizeof(o)));
         o.dwSize = sizeof(o);
         o.dwFlags |= DTT_TEXTCOLOR;
-        o.crText = ItemTextColor(state, dark);
+        o.crText = ItemTextColor(state, dark, (flags & DT_RIGHT) != 0);
         return g_origDrawThemeTextEx(t, hdc, part, state, text, len, flags, rc, &o);
     }
     return g_origDrawThemeTextEx(t, hdc, part, state, text, len, flags, rc, opts);
@@ -765,7 +1151,7 @@ static HRESULT WINAPI DrawThemeText_Hook(HTHEME t, HDC hdc, int part, int state,
         DTTOPTS o{};
         o.dwSize = sizeof(o);
         o.dwFlags = DTT_TEXTCOLOR;
-        o.crText = ItemTextColor(state, dark);
+        o.crText = ItemTextColor(state, dark, (flags & DT_RIGHT) != 0);
         RECT r = *rc;
         return g_origDrawThemeTextEx(t, hdc, part, state, text, len, flags, &r, &o);
     }
@@ -805,12 +1191,109 @@ static void ApplyClassicMenu(bool on) {
     }
 }
 
-static bool IsExplorerProcess() {
+// Nombre del programa de este proceso, en minúsculas ("explorer.exe").
+static std::wstring ProcessName() {
     wchar_t path[MAX_PATH] = {};
-    DWORD n = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
-    const wchar_t* tail = L"\\explorer.exe";
-    size_t t = wcslen(tail);
-    return n >= t && _wcsicmp(path + n - t, tail) == 0;
+    GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
+    const wchar_t* slash = wcsrchr(path, L'\\');
+    std::wstring name = slash ? slash + 1 : path;
+    CharLowerBuffW(name.data(), (DWORD)name.size());
+    return name;
+}
+
+// ¿Está el programa en la lista de apps excluidas? ("chrome.exe; code")
+static bool IsExcluded(const std::wstring& list, const std::wstring& process) {
+    size_t pos = 0;
+    while (pos < list.size()) {
+        size_t end = list.find_first_of(L";,", pos);
+        if (end == std::wstring::npos) end = list.size();
+        std::wstring item = list.substr(pos, end - pos);
+        pos = end + 1;
+        size_t a = item.find_first_not_of(L" \t\"'"), b = item.find_last_not_of(L" \t\"'");
+        if (a == std::wstring::npos) continue;
+        item = item.substr(a, b - a + 1);
+        CharLowerBuffW(item.data(), (DWORD)item.size());
+        if (item.find(L'.') == std::wstring::npos) item += L".exe";
+        if (item == process) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Animación, retraso de los submenús y letras de acceso
+// ---------------------------------------------------------------------------
+// Son ajustes de todo Windows. Los aplica el Explorador sin guardarlos en el
+// perfil (vuelven solos al cerrar sesión) y se recuerdan los originales para
+// devolverlos al desactivar el mod o la opción.
+
+static bool GetSpiBool(UINT action) {
+    BOOL v = FALSE;
+    SystemParametersInfoW(action, 0, &v, 0);
+    return v != FALSE;
+}
+
+static void SetSpiBool(UINT get, UINT set, bool v) {
+    if (GetSpiBool(get) != v) SystemParametersInfoW(set, 0, (PVOID)(UINT_PTR)(v ? TRUE : FALSE), SPIF_SENDCHANGE);
+}
+
+static void SetSubmenuDelay(int ms) {
+    DWORD now = 0;
+    SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &now, 0);
+    if ((int)now != ms) SystemParametersInfoW(SPI_SETMENUSHOWDELAY, (UINT)ms, nullptr, SPIF_SENDCHANGE);
+}
+
+static void RestoreSystemMenuSettings() {
+    if (!Wh_GetIntValue(L"sysSaved", 0)) return;
+    SetSpiBool(SPI_GETMENUANIMATION, SPI_SETMENUANIMATION, Wh_GetIntValue(L"origMenuAnimation", 1) != 0);
+    SetSpiBool(SPI_GETMENUFADE, SPI_SETMENUFADE, Wh_GetIntValue(L"origMenuFade", 1) != 0);
+    SetSubmenuDelay(Wh_GetIntValue(L"origMenuDelay", 400));
+    SetSpiBool(SPI_GETKEYBOARDCUES, SPI_SETKEYBOARDCUES, Wh_GetIntValue(L"origKeyboardCues", 0) != 0);
+    Wh_SetIntValue(L"sysSaved", 0);
+}
+
+static void ApplySystemMenuSettings(const Style& st) {
+    if (!g_isExplorer) return;
+    bool touches = st.animation != Animation::System || st.submenuDelay >= 0 || st.accessKeys;
+    if (!touches) {
+        RestoreSystemMenuSettings();
+        return;
+    }
+    if (!Wh_GetIntValue(L"sysSaved", 0)) {
+        DWORD delay = 400;
+        SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &delay, 0);
+        Wh_SetIntValue(L"origMenuAnimation", GetSpiBool(SPI_GETMENUANIMATION));
+        Wh_SetIntValue(L"origMenuFade", GetSpiBool(SPI_GETMENUFADE));
+        Wh_SetIntValue(L"origMenuDelay", (int)delay);
+        Wh_SetIntValue(L"origKeyboardCues", GetSpiBool(SPI_GETKEYBOARDCUES));
+        Wh_SetIntValue(L"sysSaved", 1);
+    }
+    bool anim = Wh_GetIntValue(L"origMenuAnimation", 1) != 0, fade = Wh_GetIntValue(L"origMenuFade", 1) != 0;
+    switch (st.animation) {
+        case Animation::Fade:
+            anim = fade = true;
+            break;
+        case Animation::Slide:
+            anim = true;
+            fade = false;
+            break;
+        case Animation::None:
+            anim = false;
+            break;
+        default:
+            break;
+    }
+    SetSpiBool(SPI_GETMENUANIMATION, SPI_SETMENUANIMATION, anim);
+    SetSpiBool(SPI_GETMENUFADE, SPI_SETMENUFADE, fade);
+    SetSubmenuDelay(st.submenuDelay >= 0 ? st.submenuDelay : Wh_GetIntValue(L"origMenuDelay", 400));
+    SetSpiBool(SPI_GETKEYBOARDCUES, SPI_SETKEYBOARDCUES,
+               st.accessKeys || Wh_GetIntValue(L"origKeyboardCues", 0) != 0);
+}
+
+static bool OwnsTaskbar() {
+    HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
+    DWORD pid = 0;
+    if (tray) GetWindowThreadProcessId(tray, &pid);
+    return pid == GetCurrentProcessId();
 }
 
 // ---------------------------------------------------------------------------
@@ -824,8 +1307,22 @@ static bool Hook(HMODULE mod, const char* name, T hook, T* original) {
     return Wh_SetFunctionHook(target, (void*)hook, (void**)original) != FALSE;
 }
 
+static void ApplyExplorerOptions() {
+    Style st = CurrentStyle();
+    ApplyClassicMenu(st.classicExplorer);
+    ApplySystemMenuSettings(st);
+}
+
 BOOL Wh_ModInit() {
     LoadSettings();
+    std::wstring process = ProcessName();
+    g_isExplorer = process == L"explorer.exe";
+    if (IsExcluded(StringSetting(L"excludedApps"), process)) {
+        // Se queda cargado sin tocar nada: la lista se vuelve a mirar al
+        // abrir de nuevo la app.
+        Wh_Log(L"%s está en las apps excluidas", process.c_str());
+        return TRUE;
+    }
     HMODULE ux = LoadLibraryW(L"uxtheme.dll");
     if (!ux) return FALSE;
     bool ok = Hook(ux, "DrawThemeBackground", DrawThemeBackground_Hook, &g_origDrawThemeBackground) &&
@@ -851,18 +1348,20 @@ BOOL Wh_ModInit() {
         if (!works) g_getThemeClass = nullptr;
     }
     Wh_Log(L"Menús estilo Apple listo (clase de tema: %s)", g_getThemeClass ? L"sí" : L"no");
-    g_isExplorer = IsExplorerProcess();
-    ApplyClassicMenu(g_classicExplorer);
+    ApplyExplorerOptions();
     return TRUE;
 }
 
 void Wh_ModUninit() {
-    // La clave del menú clásico se deja: el mod también se descarga al
-    // reiniciar el Explorador, y quitarla ahí haría que el Explorador nuevo
+    // La animación y los demás ajustes de Windows vuelven como estaban (solo
+    // el Explorador del escritorio: no una ventana de carpeta en otro
+    // proceso). La clave del menú clásico se deja: el mod también se
+    // descarga al reiniciar el Explorador, y quitarla ahí haría que el nuevo
     // arranque con el menú de Windows 11. Se quita al apagar la opción.
+    if (g_isExplorer && OwnsTaskbar()) RestoreSystemMenuSettings();
 }
 
 void Wh_ModSettingsChanged() {
     LoadSettings();
-    ApplyClassicMenu(g_classicExplorer);
+    ApplyExplorerOptions();
 }
