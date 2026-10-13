@@ -1,7 +1,9 @@
 # Servidor falso compatible con la API de OpenAI para el banco de pruebas:
 # /v1/models y /v1/chat/completions (por partes, como Foundry Local u Ollama).
 # /error/v1/... responde con un error. Guarda el último pedido en ultimo.json.
-import json, sys, time
+# Como la NPU, atiende de a una respuesta: mientras genera otra (aunque el
+# cliente ya la haya cortado) contesta 503 "busy". Los resúmenes van lento.
+import json, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RESPUESTA = [
@@ -21,6 +23,9 @@ FOUNDRY = len(sys.argv) > 2 and sys.argv[2] == "foundry"
 MODELOS = ["Phi-3-mini-4k-instruct-openvino-npu:1", "DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4",
            "Phi-4-mini-instruct-openvino-npu:2", "phi-4-mini-cpu"] if FOUNDRY \
     else ["phi-4-mini-cpu", "Phi-4-mini-instruct-qnn-npu:2"]
+
+lock = threading.Lock()
+activos = 0
 
 def cargados():
     try:
@@ -60,17 +65,36 @@ class H(BaseHTTPRequestHandler):
             m = req.get("model")
             self._json(400, {"error": {"message": f"Model not loaded: Model '{m}' must be loaded before inference"}})
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
-        for i, part in enumerate(RESPUESTA):
-            line = "data: " + json.dumps({"choices": [{"delta": {"content": part}}]}) + "\n\n"
-            raw = line.encode()
-            # Partido a la mitad, para probar líneas que llegan en dos trozos.
-            half = len(raw) // 2 if i == 2 else len(raw)
-            self.wfile.write(raw[:half]); self.wfile.flush(); time.sleep(0.03)
-            self.wfile.write(raw[half:]); self.wfile.flush(); time.sleep(0.03)
-        self.wfile.write(b"data: [DONE]\n\n")
-        self.wfile.flush()
+        global activos
+        with lock:
+            if activos > 0:
+                self._json(503, {"error": {"message": "Model is busy processing another request"}})
+                return
+            activos += 1
+        pausa = 0.2 if "Resume" in json.dumps(req, ensure_ascii=False) else 0.03
+        vivo = True
+        def enviar(b):
+            nonlocal vivo
+            if not vivo:
+                return
+            try:
+                self.wfile.write(b); self.wfile.flush()
+            except OSError:
+                vivo = False  # el cliente cortó: se sigue generando igual
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for i, part in enumerate(RESPUESTA):
+                line = "data: " + json.dumps({"choices": [{"delta": {"content": part}}]}) + "\n\n"
+                raw = line.encode()
+                # Partido a la mitad, para probar líneas que llegan en dos trozos.
+                half = len(raw) // 2 if i == 2 else len(raw)
+                enviar(raw[:half]); time.sleep(pausa)
+                enviar(raw[half:]); time.sleep(pausa)
+            enviar(b"data: [DONE]\n\n")
+        finally:
+            with lock:
+                activos -= 1
 
 ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 8765), H).serve_forever()

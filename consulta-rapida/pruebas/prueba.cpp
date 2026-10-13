@@ -413,6 +413,67 @@ int wmain() {
     PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
     Pump(200);
 
+    // Una pregunta seleccionada: la responde.
+    g_testSettings[L"theme"] = L"light";
+    Wh_ModSettingsChanged();
+    Check(LooksLikeQuestion(L"How does it work?") && LooksLikeQuestion(L"«¿Por qué el cielo es azul»") &&
+              LooksLikeQuestion(L"(¿cuándo?)") && !LooksLikeQuestion(L"serendipia") && !LooksLikeQuestion(L""),
+          "Reconoce cuándo lo seleccionado es una pregunta");
+    auto clickChip = [](int i) {
+        PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.chips[i].left + g_pop.chips[i].right) / 2,
+                                                             (g_pop.chips[i].top + g_pop.chips[i].bottom) / 2));
+    };
+    MarkAsk();
+    PostMessageW(g_host, WM_APP_SELECTION, 0,
+                 (LPARAM)new SelectionResult{L"¿Por qué el cielo es azul?", pt, nullptr});
+    Pump(300);
+    Check(WaitAnswer(5000) && g_pop.action == Action::Answer &&
+              ReadFile("ultimo.json").find(ToUtf8(L"Responde esta pregunta")) != std::string::npos,
+          "Si lo seleccionado es una pregunta, la responde (botón Pregunta)");
+    Pump(100);
+    DumpPopup("out\\6-pregunta.bgra");
+    {
+        RECT last = g_pop.chips[kChips - 1];
+        Check(last.right <= g_pop.close.right && last.top == g_pop.chips[0].top, "Los cinco botones caben en una fila");
+    }
+    // Cambiar de opción mientras responde: el modelo sigue ocupado con la
+    // anterior un rato; el mod espera y pide la nueva, sin mostrar error.
+    MarkAsk();
+    clickChip(2);  // Resumir (el servidor falso lo hace lento)
+    Pump(700);
+    Check(!CurrentAnswer().done, "El resumen todavía no termina");
+    MarkAsk();
+    clickChip(1);  // Explicar, antes de que termine el resumen
+    bool waited = false, done = false;
+    for (ULONGLONG end = GetTickCount64() + 15000; GetTickCount64() < end;) {
+        AnswerState a = CurrentAnswer();
+        if (a.gen > g_since && a.status.find(L"Esperando") == 0) waited = true;
+        if (a.gen > g_since && a.done) { done = true; break; }
+        Pump(20);
+    }
+    printf("    error: «%ls»\n", CurrentAnswer().error.c_str());
+    Check(done && CurrentAnswer().error.empty() && !CurrentAnswer().raw.empty() && g_pop.action == Action::Explain &&
+              ReadFile("ultimo.json").find(ToUtf8(L"Explica con palabras sencillas")) != std::string::npos,
+          "Al cambiar de opción mientras responde, no queda en «ocupado»: responde la nueva");
+    Check(waited, "Y mientras tanto avisa que espera al modelo");
+    // Volver a una opción ya respondida: al instante, sin preguntar otra vez.
+    DeleteFileA("ultimo.json");
+    MarkAsk();
+    clickChip(4);
+    Pump(100);
+    {
+        AnswerState a = CurrentAnswer();
+        Check(a.done && a.error.empty() && !a.raw.empty() && g_pop.action == Action::Answer &&
+                  GetFileAttributesA("ultimo.json") == INVALID_FILE_ATTRIBUTES,
+              "Volver a una opción ya respondida la muestra al instante, sin preguntar de nuevo");
+    }
+    MarkAsk();
+    clickChip(4);
+    Pump(100);
+    Check(g_askGen.load() == g_since, "Tocar la opción que ya se ve no la vuelve a pedir");
+    PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+    Pump(200);
+
     // Errores claros.
     g_testSettings[L"endpoint"] = L"http://127.0.0.1:8765/error/v1";
     g_testSettings[L"model"] = L"x";
