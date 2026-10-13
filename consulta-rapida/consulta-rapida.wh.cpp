@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.1
+// @version         1.2
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -576,8 +576,9 @@ static std::wstring ServiceError(const HttpResult& r) {
 // Dónde está el servicio y con qué modelo
 // ---------------------------------------------------------------------------
 
-// Corre un programa de consola sin ventana y devuelve lo que escribe.
-static bool RunCapture(const std::wstring& cmdLine, DWORD timeoutMs, std::string& out) {
+// Corre un programa de consola sin ventana y devuelve lo que escribe (y, si
+// se pide, con qué código terminó).
+static bool RunCapture(const std::wstring& cmdLine, DWORD timeoutMs, std::string& out, DWORD* exitCode = nullptr) {
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE rd = nullptr, wr = nullptr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
@@ -586,10 +587,14 @@ static bool RunCapture(const std::wstring& cmdLine, DWORD timeoutMs, std::string
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     si.hStdOutput = si.hStdError = wr;
+    // Sin entrada: si el comando pregunta algo (¿descargar?), no se queda
+    // esperando una respuesta que nadie va a dar.
+    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
     PROCESS_INFORMATION pi{};
     std::wstring cmd = cmdLine;
     BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     CloseHandle(wr);
+    if (si.hStdInput != INVALID_HANDLE_VALUE) CloseHandle(si.hStdInput);
     if (!ok) {
         CloseHandle(rd);
         return false;
@@ -616,6 +621,7 @@ static bool RunCapture(const std::wstring& cmdLine, DWORD timeoutMs, std::string
             break;
         }
     }
+    if (exitCode && !GetExitCodeProcess(pi.hProcess, exitCode)) *exitCode = 1;
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     CloseHandle(rd);
@@ -715,35 +721,54 @@ static std::vector<std::wstring> FoundryLoadedModels(const std::wstring& base, c
     return r.body[first] == '[' ? JsonStrings(r.body) : JsonIds(r.body);
 }
 
+// ¿Aparece el modelo en lo que escribió un comando de Foundry? Se busca sin
+// el número de versión (":4"), sin importar mayúsculas.
+static bool MentionsModel(const std::string& text, const std::wstring& id) {
+    std::wstring base = id.substr(0, id.rfind(L':') == std::wstring::npos ? id.size() : id.rfind(L':'));
+    std::string t = text, b = ToUtf8(base);
+    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return (char)tolower(c); });
+    std::transform(b.begin(), b.end(), b.begin(), [](unsigned char c) { return (char)tolower(c); });
+    return !b.empty() && t.find(b) != std::string::npos;
+}
+
+static std::vector<std::wstring> ModelsIn(const std::vector<std::wstring>& ids, const std::string& text) {
+    std::vector<std::wstring> out;
+    for (auto& id : ids) {
+        if (MentionsModel(text, id)) out.push_back(id);
+    }
+    return out;
+}
+
 static bool IsNotLoadedError(std::wstring msg) {
     CharLowerBuffW(msg.data(), (DWORD)msg.size());
     return msg.find(L"not loaded") != std::wstring::npos || msg.find(L"must be loaded") != std::wstring::npos;
 }
 
-static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out);
+static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out, DWORD* exitCode);
 
-// Carga un modelo en Foundry Local: por su API y, si no, con el comando.
-static void LoadFoundryModel(const std::wstring& base, const std::wstring& model, const std::wstring& key) {
-    HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/load/" + UrlPart(model), "GET", "", key, nullptr, 600000);
-    if (r.error.empty() && r.status == 200) return;
+// Carga en Foundry Local un modelo ya descargado: por su API (versiones
+// anteriores) o con «foundry model load». true si quedó cargado.
+static bool LoadFoundryModel(const std::wstring& base, const std::wstring& model, const std::wstring& key) {
+    HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/load/" + UrlPart(model), "GET", "", key, nullptr, 180000);
     std::string out;
-    RunFoundry(L"model load \"" + model + L"\"", 600000, out);
-    if (FoundryLoadedModels(base, key).empty()) {
-        // Algunas versiones lo quieren sin el número de versión (":4").
-        size_t colon = model.rfind(L':');
-        if (colon != std::wstring::npos) RunFoundry(L"model load \"" + model.substr(0, colon) + L"\"", 600000, out);
+    if (!(r.error.empty() && r.status == 200)) {
+        RunFoundry(L"model load \"" + model + L"\"", 180000, out, nullptr);
+        Wh_Log(L"foundry model load %s: %s", model.c_str(), FromUtf8(out.substr(0, 300)).c_str());
     }
+    std::string loaded;
+    RunFoundry(L"model list --loaded", 30000, loaded, nullptr);
+    return MentionsModel(loaded, model) || !FoundryLoadedModels(base, key).empty();
 }
 
 // Corre un comando de Foundry Local. Prueba "foundry" (en el PATH) y el
 // acceso de la Tienda en WindowsApps: si el navegador se abrió antes de
 // instalarlo, su PATH todavía no lo tiene.
-static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out) {
-    if (RunCapture(L"foundry " + args, timeoutMs, out)) return true;
+static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out, DWORD* exitCode = nullptr) {
+    if (RunCapture(L"foundry " + args, timeoutMs, out, exitCode)) return true;
     wchar_t local[MAX_PATH] = {};
     if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\WindowsApps\\foundry.exe", local, MAX_PATH)) return false;
     return GetFileAttributesW(local) != INVALID_FILE_ATTRIBUTES &&
-           RunCapture(L"\"" + std::wstring(local) + L"\" " + args, timeoutMs, out);
+           RunCapture(L"\"" + std::wstring(local) + L"\" " + args, timeoutMs, out, exitCode);
 }
 
 // Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Las
@@ -817,9 +842,46 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
             error = ServiceError(r);
             return false;
         }
-        std::vector<std::wstring> loaded;
-        if (st.provider == Provider::Foundry) loaded = FoundryLoadedModels(b.base, st.apiKey);
-        b.model = PickModel(loaded.empty() ? JsonIds(r.body) : loaded);
+        std::vector<std::wstring> ids = JsonIds(r.body);
+        if (st.provider == Provider::Foundry) {
+            // La API ofrece todo el catálogo: se elige entre lo cargado y, si
+            // no hay, lo descargado (nunca algo que habría que descargar).
+            std::vector<std::wstring> loaded = FoundryLoadedModels(b.base, st.apiKey);
+            // Solo cuenta lo que escribe un comando que terminó bien (las
+            // versiones viejas no tienen estas opciones).
+            auto list = [](const wchar_t* args, std::string& txt) {
+                std::string out;
+                DWORD code = 1;
+                if (RunFoundry(args, 30000, out, &code) && code == 0) {
+                    txt += out;
+                    return true;
+                }
+                return false;
+            };
+            std::string loadedTxt, cachedTxt;
+            bool cliKnows = list(L"model list --loaded", loadedTxt);
+            for (auto& id : ModelsIn(ids, loadedTxt)) loaded.push_back(id);
+            if (loaded.empty()) {
+                cliKnows = list(L"model list --cached", cachedTxt) || cliKnows;
+                if (ModelsIn(ids, cachedTxt).empty()) cliKnows = list(L"cache list", cachedTxt) || cliKnows;
+            }
+            std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
+            Wh_Log(L"Foundry: %d modelos en la API, %d cargados, %d descargados", (int)ids.size(), (int)loaded.size(),
+                   (int)cached.size());
+            if (!loaded.empty()) {
+                b.model = PickModel(loaded);
+            } else if (!cached.empty()) {
+                b.model = PickModel(cached);
+            } else if (!cliKnows) {
+                b.model = PickModel(ids);  // el comando no sabe decirlo: lo que ofrezca la API
+            } else {
+                error = L"No hay modelos descargados en Foundry Local. Descarga uno con «foundry run phi-4-mini» "
+                        L"o pon su nombre en Modelo, en la configuración del mod.";
+                return false;
+            }
+        } else {
+            b.model = PickModel(ids);
+        }
         if (b.model.empty()) {
             error = st.provider == Provider::Ollama
                         ? L"Ollama no tiene modelos. Descarga uno con «ollama pull llama3.2»."
@@ -966,11 +1028,18 @@ static DWORD WINAPI AskThread(LPVOID param) {
     // cargados: se carga (la primera vez tarda) y se reintenta.
     if (r.error.empty() && r.status != 200 && foundry && IsNotLoadedError(ServiceError(r))) {
         UpdateAnswer([&](AnswerState& a) { a.status = L"Cargando el modelo (la primera vez tarda un poco)"; });
-        LoadFoundryModel(b.base, b.model, st.apiKey);
+        bool loaded = LoadFoundryModel(b.base, b.model, st.apiKey);
         if (!current()) return 0;
         UpdateAnswer([&](AnswerState& a) { a.status.clear(); });
         r = send();
         if (!current()) return 0;
+        if (!loaded && r.error.empty() && r.status != 200) {
+            ForgetBackend();
+            std::wstring e = L"No se pudo cargar «" + b.model + L"». Cárgalo con «foundry model load " + b.model +
+                             L"» o elige otro en Modelo, en la configuración del mod.";
+            UpdateAnswer([&](AnswerState& a) { a.error = e; a.done = true; a.waiting = false; });
+            return 0;
+        }
     }
     if (!r.error.empty() || r.status != 200) {
         ForgetBackend();  // quizá cambió de puerto o se cerró: buscarlo de nuevo la próxima vez

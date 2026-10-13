@@ -204,6 +204,13 @@ int wmain() {
     SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"load");
     ForgetBackend();
     DeleteFileW(L"cargado.txt");
+    {
+        // Un comando que pregunta algo (¿descargar?) no deja al mod esperando.
+        std::string out;
+        ULONGLONG t0 = GetTickCount64();
+        RunFoundry(L"model load \"Phi-3-mini-4k-instruct-openvino-npu:1\"", 30000, out, nullptr);
+        Check(GetTickCount64() - t0 < 5000, "Si Foundry pregunta algo, no se queda esperando la respuesta");
+    }
     MarkAsk();
     StartAsk(Action::Define, L"hola", L"");
     Check(WaitAnswer(20000) && CurrentAnswer().error.empty() && !CurrentAnswer().raw.empty(),
@@ -211,7 +218,7 @@ int wmain() {
     std::string loadedName = ReadFile("cargado.txt");
     printf("    cargado: %s · %ls\n", loadedName.c_str(), CurrentAnswer().label.c_str());
     Check(loadedName == "Phi-4-mini-instruct-openvino-npu:2",
-          "Elige el de NPU que responde rápido, no el de razonamiento");
+          "Elige uno descargado de NPU y rápido (no el del catálogo sin descargar ni el de razonamiento)");
     ForgetBackend();
     MarkAsk();
     StartAsk(Action::Define, L"hola", L"");
