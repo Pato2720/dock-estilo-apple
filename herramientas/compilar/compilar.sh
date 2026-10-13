@@ -11,5 +11,5 @@ python3 -m ziglang c++ -target x86_64-windows-gnu -std=$STD -O2 -shared \
   -include windhawk_api.h -I. \
   -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
   -o dock.dll "$SRC" -Wl,--export-all-symbols \
-  -L. -lwhapi -lole32 -loleaut32 -lshell32 -lgdi32 -luser32 -ladvapi32 -ldwmapi -lgdiplus -lshcore -lversion -luuid -luxtheme
+  -L. -lwhapi -lole32 -loleaut32 -lshell32 -lgdi32 -luser32 -ladvapi32 -ldwmapi -lgdiplus -lshcore -lversion -luuid -luxtheme -lwinhttp
 echo "Listo: dock.dll"

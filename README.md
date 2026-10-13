@@ -84,6 +84,14 @@ del menú del Dock), resaltado en gris claro u otros colores y formas,
 separadores, marcas, animaciones, retraso de los submenús y apps excluidas.
 No necesita el Dock.
 
+## Consulta rápida al seleccionar
+
+Mod aparte, en [`consulta-rapida/`](consulta-rapida/): seleccionas texto en el
+navegador, tocas **Preguntar** y una ventanita lo define, explica, resume o
+traduce, o responde lo que le preguntes, con un modelo local en la NPU
+(Foundry Local), Ollama u otro servicio compatible con OpenAI. Sin abrir
+Copilot.
+
 ## Herramientas
 
 - `herramientas/compilar/compilar.sh`: compila el mod igual que Windhawk
