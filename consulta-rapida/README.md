@@ -1,9 +1,10 @@
 # Consulta rápida al seleccionar
 
 Mod de [Windhawk](https://windhawk.net), independiente de los demás, que hace
-en el navegador algo parecido a Click to Do de Copilot: seleccionas texto,
-aparece un botón **Preguntar** y la respuesta sale ahí mismo, en una
-ventanita, sin abrir Copilot ni cambiar de pestaña.
+en **cualquier app** algo parecido a Click to Do de Copilot: seleccionas
+texto (en el navegador, Word, el Bloc de notas, un PDF, un chat, la
+terminal…), aparece un botón **Preguntar** y la respuesta sale ahí mismo, en
+una ventanita, sin abrir Copilot ni cambiar de ventana.
 
 ![Ventanita definiendo una palabra (claro) y explicando un texto (oscuro), con los botones Definir, Explicar, Resumir, Traducir y Pregunta, y el botón Preguntar](captura.png)
 
@@ -38,7 +39,20 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
   rueda del mouse encima desplaza la respuesta, no la página.
 - **Siempre encima** de todo mientras se ven, incluso de otras ventanas
   "siempre visibles" (se vuelven a poner arriba cada cuarto de segundo).
-- Chrome, Edge, Firefox, Brave, Opera y Vivaldi.
+- **En todas las apps.** El mod corre una sola vez, dentro del Explorador de
+  Windows (`explorer.exe`, el proceso del escritorio y la barra de tareas),
+  y sus ganchos del mouse y del teclado ven todas las apps. El botón aparece
+  al soltar una selección hecha arrastrando o con doble clic **empezando con
+  el cursor de texto** (o en el contenido de una página web), así que no
+  sale al mover ventanas, elegir archivos ni en el escritorio o la barra de
+  tareas. El atajo funciona en cualquier app.
+- En **Dónde funciona** se puede dejar solo en los navegadores (Chrome,
+  Edge, Firefox, Brave, Opera, Vivaldi, Arc, Zen), y en **Excepto en**
+  excluir programas (`code.exe, WindowsTerminal.exe`; el `.exe` es opcional).
+- En las consolas (Terminal, símbolo del sistema, PuTTY, mintty) copia con
+  Ctrl+Insert en vez de Ctrl+C, para no interrumpir lo que esté corriendo.
+- No funciona en apps abiertas **como administrador**: Windows no deja que
+  una app normal (el Explorador) vea su teclado ni copie de ellas.
 
 ## Con qué responde
 
@@ -50,7 +64,7 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
 
 Con Foundry Local el mod encuentra solo la dirección del servicio (cambia en
 cada arranque) mirando en qué puerto escucha su proceso, sin correr comandos
-(desde el navegador, `foundry …` puede quedarse colgado). Si no lo encuentra
+(lanzado desde otro programa, `foundry …` puede quedarse colgado). Si no lo encuentra
 así, usa su comando con tiempos cortos y lo arranca si está apagado. Funciona con la versión actual de Foundry Local (`foundry
 server …`) y con la anterior (`foundry service …`).
 
@@ -68,7 +82,8 @@ foundry model list           # qué modelos hay (los "npu" usan la NPU)
 En la versión anterior los comandos eran `foundry service status` y
 `foundry service start`. Si `foundry` no se reconoce, no está instalado
 (`winget install Microsoft.FoundryLocal`) o hay que abrir una terminal nueva.
-Si se instaló con el navegador abierto, ciérralo y ábrelo otra vez.
+Si se instaló hace un momento y el mod no lo encuentra, reinicia el Explorador
+(o cierra sesión y vuelve a entrar) para que tome el PATH nuevo.
 
 La API de Foundry ofrece todo su catálogo (también modelos que no tienes
 descargados), pero solo responde con los **cargados**. El mod le pregunta a
@@ -96,7 +111,8 @@ la NPU.
 
 ## Configuración
 
-Servicio, dirección, modelo y clave; botón al seleccionar (sí/no); atajo
+Servicio, dirección, modelo y clave; botón al seleccionar (sí/no); dónde
+funciona (todas las apps o solo navegadores) y apps excluidas; atajo
 (Ctrl+Mayús+Espacio, Ctrl+Alt+Espacio, Alt+Q o ninguno); qué hacer al abrir
 (automático, definir, explicar, responder o esperar); idioma de las respuestas; idioma al
 que traducir; largo máximo de la respuesta; cómo leer la selección; tema de
@@ -124,13 +140,15 @@ un `foundrylocald.exe` falso con los comandos de Foundry colgados, y un
 foco, que lo tecleado va a la caja y no a la página, y que vuelve a quedar
 encima si otra ventana la tapa. Como la NPU, el servidor falso atiende de a
 una respuesta y contesta 503 "busy" mientras sigue generando otra, aunque se
-haya cortado: 54 comprobaciones (JSON, respuestas por partes, elección del
-modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, responder una
+haya cortado: 63 comprobaciones (JSON, respuestas por partes, elección del
+modelo de NPU, que funcione en cualquier app y no en el escritorio, la barra
+de tareas ni las apps excluidas, que el botón salga solo al seleccionar con
+el cursor de texto, Ctrl+Insert en las consolas, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, responder una
 pregunta seleccionada, cambiar de botón a media respuesta sin quedar en
 "ocupado", volver al instante a una respuesta ya hecha, la pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa
 las imágenes a PNG. Para compilarlo como Windhawk:
 `SRC=../../consulta-rapida/consulta-rapida.wh.cpp sh herramientas/compilar/compilar.sh`.
 
-No se pudo probar con un navegador ni con Foundry Local de verdad (el banco
+No se pudo probar en Windows con apps ni con Foundry Local de verdad (el banco
 corre en Linux con Wine).
