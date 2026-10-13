@@ -5,7 +5,7 @@ en el navegador algo parecido a Click to Do de Copilot: seleccionas texto,
 aparece un botón **Preguntar** y la respuesta sale ahí mismo, en una
 ventanita, sin abrir Copilot ni cambiar de pestaña.
 
-![Ventanita definiendo una palabra (claro) y explicando un texto (oscuro), y el botón Preguntar](captura.png)
+![Ventanita definiendo una palabra (claro) y explicando un texto (oscuro), con los botones Definir, Explicar, Resumir, Traducir y Pregunta, y el botón Preguntar](captura.png)
 
 > La captura sale del banco de pruebas, con un servidor falso; las esquinas,
 > el borde y la sombra (que en Windows pone DWM) están simulados.
@@ -15,10 +15,19 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
 - Al seleccionar texto en una página (arrastrando o con doble clic) aparece
   **Preguntar** junto al mouse unos segundos. También sirve un atajo
   (Ctrl+Mayús+Espacio de fábrica).
-- La ventanita **define** si seleccionaste de una a tres palabras y
-  **explica** si es un texto más largo. Los botones **Definir**,
-  **Explicar**, **Resumir** y **Traducir** cambian la acción, y abajo puedes
-  escribir tu propia pregunta sobre el texto (Enter).
+- La ventanita **define** si seleccionaste de una a tres palabras,
+  **responde** si seleccionaste una pregunta («¿…?» o «…?») y **explica** si
+  es un texto más largo. Los botones **Definir**, **Explicar**, **Resumir**,
+  **Traducir** y **Pregunta** cambian la acción, y abajo puedes escribir tu
+  propia pregunta sobre el texto (Enter).
+- **Cambiar de botón mientras responde** no da "ocupado": al cortar una
+  respuesta, Foundry Local sigue generándola unos segundos (la NPU atiende de
+  a una) y rechaza la nueva. El mod lo nota, muestra "Esperando a que el
+  modelo termine la respuesta anterior" y la pide de nuevo en cuanto se
+  libera (hasta un minuto y medio). Las respuestas ya terminadas se guardan
+  mientras la ventanita sigue abierta: volver a ese botón las muestra al
+  instante, sin preguntar otra vez, y tocar el botón que ya se ve no repite
+  la consulta.
 - La respuesta llega palabra por palabra. **Copiar** la copia; Esc o un clic
   fuera cierra la ventanita.
 - **Intocable**: el botón y la ventanita nunca toman el foco, así que la app
@@ -89,7 +98,7 @@ la NPU.
 
 Servicio, dirección, modelo y clave; botón al seleccionar (sí/no); atajo
 (Ctrl+Mayús+Espacio, Ctrl+Alt+Espacio, Alt+Q o ninguno); qué hacer al abrir
-(automático, definir, explicar o esperar); idioma de las respuestas; idioma al
+(automático, definir, explicar, responder o esperar); idioma de las respuestas; idioma al
 que traducir; largo máximo de la respuesta; cómo leer la selección; tema de
 la ventanita.
 
@@ -113,9 +122,12 @@ responde con modelos cargados (y listas con nombres, solo alias o vacías),
 un `foundrylocald.exe` falso con los comandos de Foundry colgados, y un
 "navegador" en primer plano para comprobar que la ventanita no le quita el
 foco, que lo tecleado va a la caja y no a la página, y que vuelve a quedar
-encima si otra ventana la tapa: 46 comprobaciones (JSON, respuestas por partes, elección del
-modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
-pregunta propia, errores claros, leer la selección y devolver el
+encima si otra ventana la tapa. Como la NPU, el servidor falso atiende de a
+una respuesta y contesta 503 "busy" mientras sigue generando otra, aunque se
+haya cortado: 54 comprobaciones (JSON, respuestas por partes, elección del
+modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, responder una
+pregunta seleccionada, cambiar de botón a media respuesta sin quedar en
+"ocupado", volver al instante a una respuesta ya hecha, la pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa
 las imágenes a PNG. Para compilarlo como Windhawk:
 `SRC=../../consulta-rapida/consulta-rapida.wh.cpp sh herramientas/compilar/compilar.sh`.

@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
-// @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.5
+// @description     Selecciona texto en el navegador y pregunta, define, explica, traduce o responde ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
+// @version         1.6
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -19,8 +19,8 @@
 
 Como Click to Do, pero dentro del navegador: seleccionas texto y aparece un
 botoncito **Preguntar**. Al tocarlo se abre una ventanita junto al texto que
-lo **define**, **explica**, **resume** o **traduce**, o responde lo que le
-preguntes sobre él. Sin abrir Copilot ni cambiar de pestaña.
+lo **define**, **explica**, **resume** o **traduce**, responde la
+**pregunta** que seleccionaste, o lo que le preguntes sobre él. Sin abrir Copilot ni cambiar de pestaña.
 
 ## Con qué responde
 
@@ -45,8 +45,14 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 
 * Selecciona texto y toca **Preguntar** (aparece junto al mouse unos
   segundos), o selecciona y pulsa el atajo (Ctrl+Mayús+Espacio de fábrica).
-* Con una a tres palabras empieza definiendo; con más, explicando. Los
-  botones cambian la acción y abajo puedes escribir tu propia pregunta.
+* Con una a tres palabras empieza definiendo; si lo seleccionado es una
+  pregunta («¿…?»), respondiéndola; con más, explicando. Los botones
+  (Definir, Explicar, Resumir, Traducir, Pregunta) cambian la acción y abajo
+  puedes escribir tu propia pregunta.
+* Cambiar de botón mientras responde funciona: si el modelo sigue ocupado
+  con la respuesta anterior (la NPU atiende de a una), el mod espera a que
+  se libere y pide la nueva. Volver a un botón ya respondido la muestra al
+  instante, sin preguntar otra vez.
 * Esc o un clic fuera la cierra. **Copiar** copia la respuesta.
 * **Nunca toma el foco**: ni el botón ni la ventanita activan nada, así
   que la app en uso sigue en primer plano y no se pierde la selección. Al
@@ -94,9 +100,10 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 - defaultAction: auto
   $name: Al abrir
   $options:
-  - auto: Definir una palabra, explicar un texto más largo
+  - auto: Definir una palabra, responder una pregunta, explicar un texto más largo
   - define: Siempre definir
   - explain: Siempre explicar
+  - answer: Siempre responder (como pregunta)
   - none: Esperar a que elija
 - answerLanguage: español
   $name: Idioma de las respuestas
@@ -178,7 +185,7 @@ constexpr PATTERNID kTextPatternId = 10014;
 
 enum class Provider { Foundry, Ollama, Custom };
 enum class Hotkey { CtrlShiftSpace, CtrlAltSpace, AltQ, None };
-enum class DefaultAction { Auto, Define, Explain, None };
+enum class DefaultAction { Auto, Define, Explain, Answer, None };
 enum class ThemeMode { Auto, Light, Dark };
 
 struct Settings {
@@ -229,7 +236,8 @@ static void LoadSettings() {
              : h == L"none" ? Hotkey::None : Hotkey::CtrlShiftSpace;
     std::wstring a = StringSetting(L"defaultAction");
     s.defaultAction = a == L"define" ? DefaultAction::Define : a == L"explain" ? DefaultAction::Explain
-                    : a == L"none" ? DefaultAction::None : DefaultAction::Auto;
+                    : a == L"answer" ? DefaultAction::Answer : a == L"none" ? DefaultAction::None
+                                     : DefaultAction::Auto;
     s.language = Trim(StringSetting(L"answerLanguage"));
     if (s.language.empty()) s.language = L"español";
     s.translateTo = Trim(StringSetting(L"translateTo"));
@@ -424,13 +432,25 @@ static int CountWords(const std::wstring& s) {
     return n;
 }
 
+// "¿Qué es…?", "How does … work?": termina en signo de pregunta (aunque
+// siga unas comillas o un paréntesis) o empieza con «¿».
+static bool LooksLikeQuestion(const std::wstring& s) {
+    size_t a = s.find_first_not_of(L" \t\r\n\"'«“(");
+    if (a == std::wstring::npos) return false;
+    if (s[a] == L'¿') return true;
+    size_t b = s.find_last_not_of(L" \t\r\n\"'»”).");
+    return b != std::wstring::npos && (s[b] == L'?' || s[b] == L'？');
+}
+
 // ---------------------------------------------------------------------------
 // Acciones y lo que se le pide al modelo
 // ---------------------------------------------------------------------------
 
-enum class Action { Define, Explain, Summarize, Translate, Question };
+// Las primeras kChips son los botones; Question es lo que se escribe en la caja.
+enum class Action { Define, Explain, Summarize, Translate, Answer, Question };
 
-static const wchar_t* const kActionNames[] = {L"Definir", L"Explicar", L"Resumir", L"Traducir"};
+static const wchar_t* const kActionNames[] = {L"Definir", L"Explicar", L"Resumir", L"Traducir", L"Pregunta"};
+static constexpr int kChips = ARRAYSIZE(kActionNames);
 
 static std::wstring SystemPrompt(const Settings& st) {
     return L"Respondes dentro de una ventanita junto a un texto que la persona seleccionó en el navegador. "
@@ -452,6 +472,9 @@ static std::wstring UserPrompt(Action a, const std::wstring& text, const std::ws
         case Action::Translate:
             return L"Traduce al " + st.translateTo + L" (si ya está en " + st.translateTo + L", tradúcelo al " +
                    st.language + L"). Da solo la traducción:\n\n" + quoted;
+        case Action::Answer:
+            return L"Responde esta pregunta. Empieza por la respuesta y, si hace falta, agrega una explicación "
+                   L"breve. Si no lo sabes con certeza, dilo:\n\n" + quoted;
         default:
             return L"Texto seleccionado:\n" + quoted + L"\n\nPregunta: " + question;
     }
@@ -817,6 +840,17 @@ static bool IsNotLoadedError(std::wstring msg) {
     return msg.find(L"not loaded") != std::wstring::npos || msg.find(L"must be loaded") != std::wstring::npos;
 }
 
+// El modelo todavía está con otra respuesta (la NPU atiende de a una, y una
+// respuesta cortada sigue generándose un rato del lado del servicio).
+static bool IsBusyError(std::wstring msg) {
+    CharLowerBuffW(msg.data(), (DWORD)msg.size());
+    for (const wchar_t* k : {L"busy", L"ocupad", L"in progress", L"another request", L"concurren",
+                             L"currently processing", L"already processing", L"too many requests", L"try again"}) {
+        if (msg.find(k) != std::wstring::npos) return true;
+    }
+    return false;
+}
+
 static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out, DWORD* exitCode);
 
 // Carga en Foundry Local un modelo ya descargado: por su API (versiones
@@ -1144,18 +1178,20 @@ static DWORD WINAPI AskThread(LPVOID param) {
     }
     if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; a.status.clear(); });
     SseReader sse;
-    std::string whole;  // por si el servicio no responde por partes
+    std::string whole;        // por si el servicio no responde por partes
+    std::wstring streamError;  // error que llega dentro de la respuesta
+    bool gotText = false;
     auto onText = [&](const std::wstring& t) {
+        gotText = true;
         UpdateAnswer([&](AnswerState& a) { a.raw += t; a.waiting = false; a.status.clear(); });
     };
-    auto onError = [&](const std::wstring& e) {
-        UpdateAnswer([&](AnswerState& a) { a.error = e; });
-    };
-    auto send = [&] {
+    auto onError = [&](const std::wstring& e) { streamError = e; };
+    auto sendOnce = [&] {
         std::string body = ChatBody(b.model, SystemPrompt(st), UserPrompt(job->action, job->text, job->question, st),
                                     st.maxTokens);
         whole.clear();
         sse = SseReader{};
+        streamError.clear();
         return HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey,
                            [&](const char* p, size_t n) {
                                if (!current()) return false;
@@ -1163,6 +1199,27 @@ static DWORD WINAPI AskThread(LPVOID param) {
                                return sse.Feed(p, n, onText, onError);
                            },
                            120000);
+    };
+    auto busy = [&](const HttpResult& r) {
+        if (gotText || !r.error.empty()) return false;
+        if (r.status != 200 && IsNotLoadedError(ServiceError(r))) return false;
+        if (r.status == 200) return !streamError.empty() && IsBusyError(streamError);
+        return r.status == 429 || r.status == 503 || IsBusyError(ServiceError(r));
+    };
+    // Al cambiar de opción, la respuesta anterior se corta, pero el modelo
+    // puede seguir con ella unos segundos y contestar "ocupado": se espera a
+    // que se libere y se vuelve a pedir, sin mostrar el error.
+    auto send = [&] {
+        HttpResult r = sendOnce();
+        DWORD start = GetTickCount(), pause = 250;
+        while (current() && busy(r) && GetTickCount() - start < 90000) {
+            say(L"Esperando a que el modelo termine la respuesta anterior");
+            for (DWORD t = 0; t < pause && current(); t += 50) Sleep(50);
+            if (!current()) break;
+            pause = std::min<DWORD>(pause * 2, 2000);
+            r = sendOnce();
+        }
+        return r;
     };
     HttpResult r = send();
     if (!current()) return 0;
@@ -1195,8 +1252,11 @@ static DWORD WINAPI AskThread(LPVOID param) {
         }
     }
     if (!r.error.empty() || r.status != 200) {
-        ForgetBackend();  // quizá cambió de puerto o se cerró: buscarlo de nuevo la próxima vez
-        std::wstring e = !r.error.empty() ? r.error : ServiceError(r);
+        bool stillBusy = busy(r);
+        if (!stillBusy) ForgetBackend();  // quizá cambió de puerto o se cerró: buscarlo de nuevo la próxima vez
+        std::wstring e = !r.error.empty() ? r.error
+                       : stillBusy ? L"El modelo sigue ocupado con otra respuesta. Prueba de nuevo en un momento."
+                                   : ServiceError(r);
         UpdateAnswer([&](AnswerState& a) { a.error = e; a.done = true; a.waiting = false; });
         return 0;
     }
@@ -1212,6 +1272,11 @@ static DWORD WINAPI AskThread(LPVOID param) {
     UpdateAnswer([&](AnswerState& a) {
         a.done = true;
         a.waiting = false;
+        if (!streamError.empty()) {
+            a.error = !gotText && IsBusyError(streamError)
+                          ? L"El modelo sigue ocupado con otra respuesta. Prueba de nuevo en un momento."
+                          : streamError;
+        }
         if (a.raw.empty() && a.error.empty()) a.error = L"El modelo no devolvió texto.";
     });
     return 0;
@@ -1698,8 +1763,13 @@ struct Popup {
     Colors c{};
     HFONT font = nullptr, fontSmall = nullptr, fontBold = nullptr;
     int w = 0, h = 0;
-    RECT quote{}, chips[4]{}, answer{}, input{}, footer{}, copy{}, close{};
-    int hotChip = -1;  // 0..3 botones, 4 copiar, 5 cerrar
+    RECT quote{}, chips[kChips]{}, answer{}, input{}, footer{}, copy{}, close{};
+    int hotChip = -1;  // 0..kChips-1 botones, kChips copiar, kChips+1 cerrar
+    // Las respuestas ya terminadas para este texto (volver a una opción no
+    // vuelve a preguntar) y la que se está esperando.
+    std::vector<std::pair<std::wstring, AnswerState>> saved;
+    std::wstring askKey;
+    uint64_t askGen = 0;
     int scroll = 0, contentH = 0;
     int dots = 0;
     bool copied = false;
@@ -1754,7 +1824,7 @@ static std::wstring AnswerText(const AnswerState& a, bool& isError, bool& isStat
 static void LayoutPopup() {
     float s = g_pop.s;
     auto S = [&](double v) { return (int)std::lround(v * s); };
-    int W = S(400), pad = S(16);
+    int W = S(430), pad = S(16);
     int y = pad;
     g_pop.close = RECT{W - pad - S(22), y - S(2), W - pad + S(2), y + S(22)};
     g_pop.quote = RECT{pad, y, W - pad - S(28), y + S(20)};
@@ -1762,13 +1832,20 @@ static void LayoutPopup() {
     // Botones de las acciones, del ancho de su texto.
     HDC dc = CreateCompatibleDC(nullptr);
     HGDIOBJ o = SelectObject(dc, g_pop.font);
-    int x = pad, chipH = S(28);
-    for (int i = 0; i < 4; i++) {
+    int x = pad, chipH = S(28), gap = S(6), textSum = 0;
+    int tw[kChips];
+    for (int i = 0; i < kChips; i++) {
         SIZE ts{};
         GetTextExtentPoint32W(dc, kActionNames[i], (int)wcslen(kActionNames[i]), &ts);
-        int cw = ts.cx + S(24);
+        tw[i] = ts.cx;
+        textSum += ts.cx;
+    }
+    // Margen de cada botón: el que quepa en una fila (entre 12 y 24).
+    int inner = std::clamp((W - 2 * pad - textSum - gap * (kChips - 1)) / kChips, S(12), S(24));
+    for (int i = 0; i < kChips; i++) {
+        int cw = tw[i] + inner;
         g_pop.chips[i] = RECT{x, y, x + cw, y + chipH};
-        x += cw + S(6);
+        x += cw + gap;
     }
     SelectObject(dc, o);
     DeleteDC(dc);
@@ -1810,7 +1887,7 @@ static void PaintPopup(HDC dc) {
     // Cerrar (×).
     {
         const RECT& r = g_pop.close;
-        if (g_pop.hotChip == 5) FillRoundSolid(dc, r, (r.right - r.left) / 2.0f, c.chipHot, c.bg);
+        if (g_pop.hotChip == kChips + 1) FillRoundSolid(dc, r, (r.right - r.left) / 2.0f, c.chipHot, c.bg);
         HPEN pen = CreatePen(PS_SOLID, std::max(1, (int)std::lround(1.4 * s)), c.dim);
         HGDIOBJ op = SelectObject(dc, pen);
         int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2, k = (int)std::lround(4.5 * s);
@@ -1823,7 +1900,7 @@ static void PaintPopup(HDC dc) {
     }
     // Botones de las acciones (gris claro; el elegido, un poco más oscuro).
     SelectObject(dc, g_pop.font);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < kChips; i++) {
         bool on = g_pop.hasAction && (int)g_pop.action == i;
         COLORREF fill = on ? c.chipOn : g_pop.hotChip == i ? c.chipHot : c.chip;
         const RECT& r = g_pop.chips[i];
@@ -1900,7 +1977,7 @@ static void PaintPopup(HDC dc) {
     RECT fr = g_pop.footer;
     std::wstring label = a.label.empty() ? L"" : a.label;
     DrawTextW(dc, label.c_str(), (int)label.size(), &fr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    if (g_pop.hotChip == 4) FillRoundSolid(dc, g_pop.copy, 8 * s, c.chipHot, c.bg);
+    if (g_pop.hotChip == kChips) FillRoundSolid(dc, g_pop.copy, 8 * s, c.chipHot, c.bg);
     SetTextColor(dc, (a.raw.empty() || status) ? c.dim : c.text);
     RECT cr = g_pop.copy;
     DrawTextW(dc, g_pop.copied ? L"Copiado" : L"Copiar", -1, &cr, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
@@ -1923,12 +2000,32 @@ static void ResizePopup() {
 }
 
 static void RunAction(Action a, const std::wstring& question = L"") {
+    std::wstring key = std::to_wstring((int)a) + L"|" + question;
+    // La misma opción otra vez mientras responde (o ya respondió): nada que hacer.
+    if (key == g_pop.askKey && g_pop.askGen == g_askGen.load() && CurrentAnswer().error.empty()) return;
     g_pop.action = a;
     g_pop.hasAction = a != Action::Question;
     g_pop.scroll = 0;
     g_pop.copied = false;
     g_pop.dots = 0;
+    g_pop.askKey = key;
+    for (auto& [k, ans] : g_pop.saved) {
+        if (k != key) continue;
+        // Ya la tenía: se muestra al instante, sin volver a preguntar.
+        uint64_t gen = ++g_askGen;
+        AbortRequest();
+        g_pop.askGen = gen;
+        AnswerState copy = ans;
+        UpdateAnswer([&](AnswerState& s) {
+            s = copy;
+            s.gen = gen;
+        });
+        KillTimer(g_pop.wnd, TIMER_DOTS);
+        ResizePopup();
+        return;
+    }
     StartAsk(a, g_pop.text, question);
+    g_pop.askGen = g_askGen.load();
     SetTimer(g_pop.wnd, TIMER_DOTS, 350, nullptr);
     ResizePopup();
 }
@@ -1993,11 +2090,11 @@ static void CopyAnswer() {
 }
 
 static int PopupHit(POINT pt) {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < kChips; i++) {
         if (PtInRect(&g_pop.chips[i], pt)) return i;
     }
-    if (PtInRect(&g_pop.copy, pt)) return 4;
-    if (PtInRect(&g_pop.close, pt)) return 5;
+    if (PtInRect(&g_pop.copy, pt)) return kChips;
+    if (PtInRect(&g_pop.close, pt)) return kChips + 1;
     return -1;
 }
 
@@ -2051,9 +2148,9 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             SetTyping(PtInRect(&g_pop.input, pt) != FALSE);
             int hit = PopupHit(pt);
-            if (hit >= 0 && hit < 4) RunAction((Action)hit);
-            else if (hit == 4) CopyAnswer();
-            else if (hit == 5) ClosePopup();
+            if (hit >= 0 && hit < kChips) RunAction((Action)hit);
+            else if (hit == kChips) CopyAnswer();
+            else if (hit == kChips + 1) ClosePopup();
             return 0;
         }
         case WM_MOUSEWHEEL: {
@@ -2065,7 +2162,15 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         case WM_APP_ANSWER: {
             AnswerState a = CurrentAnswer();
-            if (a.done) KillTimer(hwnd, TIMER_DOTS);
+            if (a.done) {
+                KillTimer(hwnd, TIMER_DOTS);
+                // Se guarda si salió bien, para volver a ella sin preguntar.
+                if (a.gen == g_pop.askGen && a.error.empty() && !a.raw.empty() && !g_pop.askKey.empty()) {
+                    bool have = false;
+                    for (auto& [k, ans] : g_pop.saved) have = have || k == g_pop.askKey;
+                    if (!have) g_pop.saved.emplace_back(g_pop.askKey, a);
+                }
+            }
             ResizePopup();
             return 0;
         }
@@ -2136,6 +2241,8 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     g_pop.hotChip = -1;
     g_pop.scroll = 0;
     g_pop.copied = false;
+    g_pop.saved.clear();
+    g_pop.askKey.clear();
     ++g_askGen;
     AbortRequest();
     UpdateAnswer([](AnswerState& a) {
@@ -2167,9 +2274,14 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     SetWindowPos(g_pop.wnd, HWND_TOPMOST, x, y, g_pop.w, g_pop.h, SWP_SHOWWINDOW | SWP_NOACTIVATE);
     SetTimer(g_host, TIMER_TOP, 250, nullptr);
     DefaultAction da = st.defaultAction;
-    if (da == DefaultAction::Auto) da = CountWords(sel) <= 3 ? DefaultAction::Define : DefaultAction::Explain;
+    if (da == DefaultAction::Auto) {
+        da = LooksLikeQuestion(sel) ? DefaultAction::Answer
+           : CountWords(sel) <= 3   ? DefaultAction::Define
+                                    : DefaultAction::Explain;
+    }
     if (da == DefaultAction::Define) RunAction(Action::Define);
     else if (da == DefaultAction::Explain) RunAction(Action::Explain);
+    else if (da == DefaultAction::Answer) RunAction(Action::Answer);
     InvalidateRect(g_pop.wnd, nullptr, FALSE);
 }
 
