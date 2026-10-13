@@ -21,6 +21,14 @@ ventanita, sin abrir Copilot ni cambiar de pestaña.
   escribir tu propia pregunta sobre el texto (Enter).
 - La respuesta llega palabra por palabra. **Copiar** la copia; Esc o un clic
   fuera cierra la ventanita.
+- **Intocable**: el botón y la ventanita nunca toman el foco, así que la app
+  en uso sigue en primer plano y no se pierde la selección. Al tocar la caja
+  de la pregunta, el mod lee el teclado él mismo (con tu distribución,
+  mayúsculas, AltGr y acentos; Ctrl+V pega, Ctrl+Retroceso borra una palabra)
+  y las teclas no llegan a la página, hasta Enter, Esc o un clic fuera. La
+  rueda del mouse encima desplaza la respuesta, no la página.
+- **Siempre encima** de todo mientras se ven, incluso de otras ventanas
+  "siempre visibles" (se vuelven a poner arriba cada cuarto de segundo).
 - Chrome, Edge, Firefox, Brave, Opera y Vivaldi.
 
 ## Con qué responde
@@ -102,8 +110,10 @@ acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
 corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
 vieja, y un servidor que, como Foundry, ofrece todo el catálogo pero solo
 responde con modelos cargados (y listas con nombres, solo alias o vacías),
-y un `foundrylocald.exe` falso con los comandos de Foundry colgados: 40
-comprobaciones (JSON, respuestas por partes, elección del
+un `foundrylocald.exe` falso con los comandos de Foundry colgados, y un
+"navegador" en primer plano para comprobar que la ventanita no le quita el
+foco, que lo tecleado va a la caja y no a la página, y que vuelve a quedar
+encima si otra ventana la tapa: 46 comprobaciones (JSON, respuestas por partes, elección del
 modelo de NPU, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, la
 pregunta propia, errores claros, leer la selección y devolver el
 portapapeles, que no queden hilos al desactivarlo). `pruebas/a_png.py` pasa

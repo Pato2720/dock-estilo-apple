@@ -75,17 +75,6 @@ static void DumpPopup(const char* path) {
     LayoutPopup();
     Canvas cv(g_pop.w, g_pop.h);
     PaintPopup(cv.dc);
-    // Lo que escribe la persona va en un control de Windows: se imita con su texto.
-    wchar_t buf[256] = {};
-    GetWindowTextW(g_pop.edit, buf, ARRAYSIZE(buf));
-    RECT er;
-    GetWindowRect(g_pop.edit, &er);
-    MapWindowPoints(nullptr, g_pop.wnd, (POINT*)&er, 2);
-    HGDIOBJ of = SelectObject(cv.dc, g_pop.font);
-    SetBkMode(cv.dc, TRANSPARENT);
-    SetTextColor(cv.dc, buf[0] ? g_pop.c.text : g_pop.c.dim);
-    DrawTextW(cv.dc, buf[0] ? buf : L"Pregunta algo sobre el texto…", -1, &er, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-    SelectObject(cv.dc, of);
     GdiFlush();
     for (int i = 0; i < cv.w * cv.h; i++) cv.bits[i] |= 0xFF000000u;
     SaveBits(path, cv.bits, cv.w, cv.h);
@@ -290,11 +279,53 @@ int wmain() {
     Check(g_host && g_pill && g_mouseHook && g_keyHook, "Se crearon las ventanas y los ganchos");
 
     printf("== Ventanita ==\n");
+    // Un "navegador" en primer plano, con el foco en su texto.
+    WNDCLASSW bwc{};
+    bwc.lpfnWndProc = DefWindowProcW;
+    bwc.hInstance = GetModuleHandleW(nullptr);
+    bwc.lpszClassName = L"NavegadorEnUso";
+    RegisterClassW(&bwc);
+    HWND browser = CreateWindowExW(0, L"NavegadorEnUso", L"Navegador", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 700,
+                                   500, nullptr, nullptr, bwc.hInstance, nullptr);
+    HWND page = CreateWindowExW(0, L"EDIT", L"texto de la página", WS_CHILD | WS_VISIBLE, 10, 10, 400, 30, browser,
+                                nullptr, bwc.hInstance, nullptr);
+    SetForegroundWindow(browser);
+    SetFocus(page);
+    Pump(300);
+    auto pageText = [&] {
+        wchar_t b[128] = {};
+        GetWindowTextW(page, b, ARRAYSIZE(b));
+        return std::wstring(b);
+    };
+    auto sendKeys = [](std::initializer_list<WORD> vks) {
+        for (WORD vk : vks) {
+            INPUT in[2] = {};
+            in[0].type = in[1].type = INPUT_KEYBOARD;
+            in[0].ki.wVk = in[1].ki.wVk = vk;
+            in[0].ki.wScan = in[1].ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+            in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(2, in, sizeof(INPUT));
+        }
+    };
+    auto sendText = [](const std::wstring& t) {
+        for (wchar_t ch : t) {
+            INPUT in[2] = {};
+            in[0].type = in[1].type = INPUT_KEYBOARD;
+            in[0].ki.wScan = in[1].ki.wScan = ch;
+            in[0].ki.dwFlags = KEYEVENTF_UNICODE;
+            in[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+            SendInput(2, in, sizeof(INPUT));
+        }
+    };
     POINT pt{500, 300};
     MarkAsk();
     PostMessageW(g_host, WM_APP_SELECTION, 0, (LPARAM)new SelectionResult{L"serendipia", pt, nullptr});
     Pump(300);
     Check(g_pop.wnd && IsWindowVisible(g_pop.wnd), "Se abre la ventanita con lo seleccionado");
+    Check(GetForegroundWindow() == browser && GetFocus() == page &&
+              (GetWindowLongPtrW(g_pop.wnd, GWL_EXSTYLE) & (WS_EX_NOACTIVATE | WS_EX_TOPMOST)) ==
+                  (WS_EX_NOACTIVATE | WS_EX_TOPMOST),
+          "No le quita el primer plano ni el foco a la app en uso");
     Check(WaitAnswer(5000), "Llega la respuesta");
     {
         AnswerState a = CurrentAnswer();
@@ -311,14 +342,28 @@ int wmain() {
     }
     Pump(200);
     DumpPopup("out\\1-definir-claro.bgra");
-    // Una pregunta propia.
-    SetWindowTextW(g_pop.edit, L"¿De qué idioma viene?");
-    MarkAsk();
-    PostMessageW(g_pop.wnd, WM_APP_SUBMIT, 0, 0);
+    // Una pregunta propia, escrita con el teclado sin que la ventanita
+    // tome el foco.
+    PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.input.left + g_pop.input.right) / 2,
+                                                         (g_pop.input.top + g_pop.input.bottom) / 2));
     Pump(100);
-    Check(WaitAnswer(5000), "Responde una pregunta escrita en la caja");
+    Check(g_typing, "Al tocar la caja se puede escribir");
+    sendKeys({'X', VK_BACK});
+    sendText(L"¿De qué idioma viene");
+    sendKeys({VK_OEM_2});  // una tecla normal: pasa por la distribución de teclado (aquí, /)
+    Pump(300);
+    printf("    escrito: «%ls»\n", g_pop.query.c_str());
+    Check(g_pop.query.rfind(L"¿De qué idioma viene", 0) == 0, "Lo que se teclea va a la caja (con acentos)");
+    Check(pageText() == L"texto de la página" && GetForegroundWindow() == browser && GetFocus() == page,
+          "La página no recibe las teclas y sigue en primer plano");
+    g_pop.query = L"¿De qué idioma viene?";
+    MarkAsk();
+    sendKeys({VK_RETURN});
+    Pump(200);
+    Check(WaitAnswer(5000), "Enter manda la pregunta y responde");
     Check(ReadFile("ultimo.json").find(ToUtf8(L"Pregunta: ¿De qué idioma viene?")) != std::string::npos,
           "La pregunta va con el texto seleccionado");
+    Check(!g_typing && g_pop.query.empty(), "Después de mandarla, el teclado vuelve a la app");
     // Un botón: Traducir.
     MarkAsk();
     PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.chips[3].left + g_pop.chips[3].right) / 2,
@@ -326,9 +371,10 @@ int wmain() {
     Pump(100);
     Check(WaitAnswer(5000) && ReadFile("ultimo.json").find(ToUtf8(L"Traduce al inglés")) != std::string::npos,
           "El botón Traducir pide la traducción");
-    PostMessageW(g_pop.wnd, WM_KEYDOWN, VK_ESCAPE, 0);
-    Pump(200);
-    Check(!IsWindowVisible(g_pop.wnd), "Esc la cierra");
+    sendKeys({VK_ESCAPE});
+    Pump(300);
+    Check(!IsWindowVisible(g_pop.wnd) && GetForegroundWindow() == browser && GetFocus() == page,
+          "Esc la cierra y la app sigue en primer plano");
 
     // Texto largo, tema oscuro: explica.
     g_testSettings[L"theme"] = L"dark";
@@ -341,6 +387,27 @@ int wmain() {
     Pump(300);
     Check(WaitAnswer(5000) && ReadFile("ultimo.json").find(ToUtf8(L"Explica con palabras sencillas")) != std::string::npos,
           "Con un texto largo lo explica");
+    {
+        // Otra ventana "siempre visible" encima: la ventanita vuelve a quedar arriba.
+        RECT pr;
+        GetWindowRect(g_pop.wnd, &pr);
+        HWND other = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"NavegadorEnUso", L"Otra", WS_POPUP | WS_VISIBLE,
+                                     pr.left, pr.top, 300, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        SetWindowPos(other, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        Pump(600);
+        bool above = false;
+        for (HWND h = GetWindow(g_pop.wnd, GW_HWNDNEXT); h; h = GetWindow(h, GW_HWNDNEXT)) {
+            if (h == other) above = true;
+        }
+        Check(above, "Si otra ventana siempre visible la tapa, vuelve a quedar encima");
+        DestroyWindow(other);
+    }
+    // Así se ve mientras se escribe.
+    PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.input.left + g_pop.input.right) / 2,
+                                                         (g_pop.input.top + g_pop.input.bottom) / 2));
+    Pump(100);
+    g_pop.query = L"¿Y cómo se dice en inglés?";
+    g_pop.caretOn = true;
     Pump(200);
     DumpPopup("out\\2-explicar-oscuro.bgra");
     PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
