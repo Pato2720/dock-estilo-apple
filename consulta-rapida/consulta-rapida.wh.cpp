@@ -29,7 +29,7 @@ preguntes sobre él. Sin abrir Copilot ni cambiar de pestaña.
   no). El texto no sale de tu equipo. Para instalarlo:
 
       winget install Microsoft.FoundryLocal
-      foundry model run phi-4-mini
+      foundry run phi-4-mini
 
   El mod encuentra solo la dirección del servicio y prefiere los modelos
   hechos para la NPU.
@@ -662,6 +662,52 @@ static std::wstring PickModel(const std::vector<std::wstring>& ids) {
     return ids.empty() ? L"" : ids.front();
 }
 
+// Corre un comando de Foundry Local. Prueba "foundry" (en el PATH) y el
+// acceso de la Tienda en WindowsApps: si el navegador se abrió antes de
+// instalarlo, su PATH todavía no lo tiene.
+static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& out) {
+    if (RunCapture(L"foundry " + args, timeoutMs, out)) return true;
+    wchar_t local[MAX_PATH] = {};
+    if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\WindowsApps\\foundry.exe", local, MAX_PATH)) return false;
+    return GetFileAttributesW(local) != INVALID_FILE_ATTRIBUTES &&
+           RunCapture(L"\"" + std::wstring(local) + L"\" " + args, timeoutMs, out);
+}
+
+// Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Las
+// versiones nuevas usan "foundry server …"; las de antes, "foundry service …".
+// Si no está en marcha, lo arranca.
+static bool FindFoundry(std::wstring& url, std::wstring& error) {
+    std::string out;
+    if (!RunFoundry(L"server status", 15000, out)) {
+        error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal», "
+                L"descarga un modelo con «foundry run phi-4-mini» y vuelve a abrir el navegador.";
+        return false;
+    }
+    url = FirstLocalUrl(out);
+    for (const wchar_t* cmd : {L"service status", L"server start", L"service start"}) {
+        if (!url.empty()) break;
+        bool start = wcsstr(cmd, L"start") != nullptr;
+        std::string more;
+        RunFoundry(cmd, start ? 60000 : 15000, more);
+        if (start) {
+            more.clear();
+            RunFoundry(L"server status", 15000, more);
+            if (FirstLocalUrl(more).empty()) RunFoundry(L"service status", 15000, more);
+        }
+        url = FirstLocalUrl(more);
+        out += more;
+    }
+    if (url.empty()) {
+        std::wstring said = FromUtf8(out.substr(0, 300));
+        Wh_Log(L"Foundry Local no dio su dirección. Respondió: %s", said.c_str());
+        error = L"Foundry Local no está en marcha y no se pudo arrancar. En una terminal: «foundry server start» "
+                L"y «foundry run phi-4-mini». Si sigue, pon la dirección de «foundry server status» en la "
+                L"configuración del mod.";
+        return false;
+    }
+    return true;
+}
+
 static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error) {
     std::wstring key = std::to_wstring((int)st.provider) + L"|" + st.endpoint + L"|" + st.model;
     AcquireSRWLockShared(&g_backendLock);
@@ -679,23 +725,8 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
     }
     if (b.base.empty()) {
         // Foundry Local cambia de puerto en cada arranque: se le pregunta.
-        std::string status;
-        if (!RunCapture(L"foundry service status", 10000, status)) {
-            error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal» y "
-                    L"carga un modelo con «foundry model run phi-4-mini».";
-            return false;
-        }
-        std::wstring url = FirstLocalUrl(status);
-        if (url.empty()) {
-            RunCapture(L"foundry service start", 30000, status);
-            status.clear();
-            RunCapture(L"foundry service status", 10000, status);
-            url = FirstLocalUrl(status);
-        }
-        if (url.empty()) {
-            error = L"Foundry Local no está en marcha. Ábrelo con «foundry model run phi-4-mini».";
-            return false;
-        }
+        std::wstring url;
+        if (!FindFoundry(url, error)) return false;
         b.base = url + L"/v1";
     } else if (b.base.size() < 3 || b.base.compare(b.base.size() - 3, 3, L"/v1") != 0) {
         if (b.base.find(L"/v1/") == std::wstring::npos && b.base.find(L"/openai") == std::wstring::npos) {
@@ -717,7 +748,7 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
         if (b.model.empty()) {
             error = st.provider == Provider::Ollama
                         ? L"Ollama no tiene modelos. Descarga uno con «ollama pull llama3.2»."
-                        : L"El servicio no tiene modelos cargados. Con Foundry Local: «foundry model run phi-4-mini».";
+                        : L"El servicio no tiene modelos cargados. Con Foundry Local: «foundry run phi-4-mini».";
             return false;
         }
     }
@@ -839,6 +870,25 @@ static DWORD WINAPI AskThread(LPVOID param) {
                                },
                                120000);
     if (!current()) return 0;
+    // Foundry Local se apaga solo tras un rato sin uso (y vuelve en otro
+    // puerto): se busca de nuevo y se reintenta una vez.
+    if (!r.error.empty() && r.status == 0 && st.provider == Provider::Foundry && st.endpoint.empty()) {
+        ForgetBackend();
+        if (ResolveBackend(st, b, error) && current()) {
+            UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
+            body = ChatBody(b.model, SystemPrompt(st), UserPrompt(job->action, job->text, job->question, st),
+                            st.maxTokens);
+            whole.clear();
+            r = HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey,
+                            [&](const char* p, size_t n) {
+                                if (!current()) return false;
+                                if (whole.size() < 1 << 20) whole.append(p, n);
+                                return sse.Feed(p, n, onText, onError);
+                            },
+                            120000);
+            if (!current()) return 0;
+        }
+    }
     if (!r.error.empty() || r.status != 200) {
         ForgetBackend();  // quizá cambió de puerto o se cerró: buscarlo de nuevo la próxima vez
         std::wstring e = !r.error.empty() ? r.error : ServiceError(r);
