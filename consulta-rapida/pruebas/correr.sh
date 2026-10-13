@@ -8,8 +8,9 @@ python3 -m ziglang c++ -target x86_64-windows-gnu -std=c++23 -O2 -municode \
   -DUNICODE -D_UNICODE -DWINVER=0x0A00 -U_WIN32_WINNT -D_WIN32_WINNT=0x0A00 \
   -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-unused-function \
   -o prueba.exe prueba.cpp \
-  -lwinhttp -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32 > build.log 2>&1 || { echo "NO COMPILA"; grep error build.log | head; exit 1; }
+  -lwinhttp -liphlpapi -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32 > build.log 2>&1 || { echo "NO COMPILA"; grep error build.log | head; exit 1; }
 python3 -m ziglang c++ -target x86_64-windows-gnu -O2 -municode -o foundry.exe foundry_falso.cpp >> build.log 2>&1 || { echo "NO COMPILA foundry_falso"; exit 1; }
+python3 -m ziglang c++ -target x86_64-windows-gnu -O2 -o foundrylocald.exe foundrylocald_falso.cpp -lws2_32 >> build.log 2>&1 || { echo "NO COMPILA foundrylocald_falso"; exit 1; }
 python3 servidor_falso.py 8765 & SERVER=$!
 python3 servidor_falso.py 8766 foundry & SERVER2=$!
 sleep 1

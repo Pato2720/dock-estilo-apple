@@ -246,6 +246,42 @@ int wmain() {
         printf("    %ls: %ls %ls\n", c.mode, CurrentAnswer().label.c_str(), CurrentAnswer().error.c_str());
         Check(ok && CurrentAnswer().label.find(FromUtf8(c.loaded)) != std::wstring::npos, c.what);
     }
+    {
+        // Como en tu equipo: los comandos de Foundry se cuelgan desde el
+        // navegador. Se encuentra por el puerto de su proceso y el modelo
+        // cargado, preguntando a la API, en pocos segundos.
+        SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"hang");
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        wchar_t cmd[] = L"foundrylocald.exe";
+        bool started = CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        Sleep(700);
+        g_foundryPorts = [] {
+            std::vector<USHORT> v;
+            std::string p = ReadFile("puerto.txt");
+            if (!p.empty()) v.push_back((USHORT)atoi(p.c_str()));
+            return v;
+        };
+        ForgetBackend();
+        ULONGLONG t0 = GetTickCount64();
+        MarkAsk();
+        StartAsk(Action::Define, L"hola", L"");
+        bool ok = WaitAnswer(30000) && CurrentAnswer().error.empty();
+        ULONGLONG ms = GetTickCount64() - t0;
+        printf("    %llu ms: %ls · %ls %ls\n", ms, CurrentAnswer().label.c_str(), CurrentAnswer().raw.c_str(),
+               CurrentAnswer().error.c_str());
+        Check(started && ok && CurrentAnswer().label.find(L"Phi-4-mini-instruct-openvino-npu:2") != std::wstring::npos &&
+                  CurrentAnswer().raw == L"Hola desde la NPU.",
+              "Con los comandos de Foundry colgados, lo encuentra por su puerto y usa el modelo cargado");
+        Check(ms < 6000, "Y en pocos segundos (sin esperar a los comandos)");
+        g_foundryPorts = FoundryListenPorts;
+        DeleteFileW(L"puerto.txt");
+        if (started) {
+            TerminateProcess(pi.hProcess, 0);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }
     ForgetBackend();
     Defaults(L"http://127.0.0.1:8765/v1");
     LoadSettings();

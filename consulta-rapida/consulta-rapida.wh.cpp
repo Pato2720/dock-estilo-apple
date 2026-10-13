@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.3
+// @version         1.4
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -10,7 +10,7 @@
 // @include         brave.exe
 // @include         opera.exe
 // @include         vivaldi.exe
-// @compilerOptions -lwinhttp -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
+// @compilerOptions -lwinhttp -liphlpapi -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -119,6 +119,7 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <iphlpapi.h>
 #include <uiautomationclient.h>
 #include <winhttp.h>
 
@@ -793,10 +794,10 @@ static std::wstring ProbeLoadedModel(const std::wstring& base, std::vector<std::
                      [](const std::wstring& a, const std::wstring& b) { return ModelScore(a) > ModelScore(b); });
     int tries = 0;
     for (auto& id : ids) {
-        if (++tries > 16 || g_unloading) break;
+        if (++tries > 12 || g_unloading) break;
         std::string body = "{\"model\":" + JsonString(ToUtf8(id)) +
                            ",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}";
-        HttpResult r = HttpRequest(base + L"/chat/completions", "POST", body, key, nullptr, 60000);
+        HttpResult r = HttpRequest(base + L"/chat/completions", "POST", body, key, nullptr, 20000);
         if (!r.error.empty()) break;  // el servicio no responde: no tiene caso seguir
         if (r.status == 200) return id;
     }
@@ -816,11 +817,11 @@ static bool LoadFoundryModel(const std::wstring& base, const std::wstring& model
     HttpResult r = HttpRequest(ServiceRoot(base) + L"/openai/load/" + UrlPart(model), "GET", "", key, nullptr, 180000);
     std::string out;
     if (!(r.error.empty() && r.status == 200)) {
-        RunFoundry(L"model load \"" + model + L"\"", 180000, out, nullptr);
+        RunFoundry(L"model load \"" + model + L"\"", 90000, out, nullptr);
         Wh_Log(L"foundry model load %s: %s", model.c_str(), FromUtf8(out.substr(0, 300)).c_str());
     }
     std::string loaded;
-    RunFoundry(L"model list --loaded", 30000, loaded, nullptr);
+    RunFoundry(L"model list --loaded", 10000, loaded, nullptr);
     return MentionsModel(loaded, model) || !FoundryLoadedModels(base, key).empty();
 }
 
@@ -835,42 +836,117 @@ static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& o
            RunCapture(L"\"" + std::wstring(local) + L"\" " + args, timeoutMs, out, exitCode);
 }
 
-// Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Las
-// versiones nuevas usan "foundry server …"; las de antes, "foundry service …".
-// Si no está en marcha, lo arranca.
-static bool FindFoundry(std::wstring& url, std::wstring& error) {
+using SayFn = std::function<void(const std::wstring&)>;
+
+// Puertos en los que escuchan los procesos de Foundry Local (sin correr su
+// comando: desde el navegador, «foundry …» puede quedarse colgado).
+static std::vector<USHORT> FoundryListenPorts() {
+    std::vector<USHORT> ports;
+    auto isFoundry = [](DWORD pid) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return false;
+        wchar_t path[MAX_PATH] = {};
+        DWORD n = ARRAYSIZE(path);
+        bool ok = QueryFullProcessImageNameW(h, 0, path, &n);
+        CloseHandle(h);
+        if (!ok) return false;
+        CharLowerBuffW(path, n);
+        const wchar_t* name = wcsrchr(path, L'\\');
+        name = name ? name + 1 : path;
+        return wcsstr(name, L"foundry") != nullptr || wcsstr(name, L"inference.service") != nullptr;
+    };
+    auto add = [&](DWORD port) {
+        USHORT p = (USHORT)(((port & 0xFF) << 8) | ((port >> 8) & 0xFF));  // orden de red
+        if (p && std::find(ports.begin(), ports.end(), p) == ports.end()) ports.push_back(p);
+    };
+    constexpr ULONG kInet = 2, kInet6 = 23;  // AF_INET, AF_INET6 (sin incluir Winsock)
+    for (ULONG family : {kInet, kInet6}) {
+        DWORD size = 0;
+        GetExtendedTcpTable(nullptr, &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        if (!size) continue;
+        std::vector<BYTE> buf(size + 1024);
+        size = (DWORD)buf.size();
+        if (GetExtendedTcpTable(buf.data(), &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) continue;
+        if (family == kInet) {
+            auto* t = (MIB_TCPTABLE_OWNER_PID*)buf.data();
+            for (DWORD i = 0; i < t->dwNumEntries; i++) {
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+            }
+        } else {
+            auto* t = (MIB_TCP6TABLE_OWNER_PID*)buf.data();
+            for (DWORD i = 0; i < t->dwNumEntries; i++) {
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+            }
+        }
+    }
+    return ports;
+}
+
+// ¿Responde ahí una API compatible con OpenAI (/v1/models)?
+static bool AnswersModels(const std::wstring& root) {
+    HttpResult r = HttpRequest(root + L"/v1/models", "GET", "", L"", nullptr, 3000);
+    return r.error.empty() && r.status == 200 && r.body.find("\"data\"") != std::string::npos;
+}
+
+// Para el banco de pruebas: Wine no dice de qué proceso es cada puerto.
+static std::vector<USHORT> (*g_foundryPorts)() = FoundryListenPorts;
+
+static std::wstring FoundryByPort() {
+    for (USHORT port : g_foundryPorts()) {
+        for (const wchar_t* host : {L"http://127.0.0.1:", L"http://localhost:"}) {
+            std::wstring root = host + std::to_wstring(port);
+            if (AnswersModels(root)) return root;
+        }
+    }
+    return L"";
+}
+
+// Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Primero
+// por los puertos de su proceso; si no, con su comando (las versiones nuevas
+// usan «foundry server …»; las de antes, «foundry service …»), con tiempos
+// cortos. Si no está en marcha, intenta arrancarlo.
+static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say) {
+    say(L"Buscando Foundry Local");
+    ULONGLONG t0 = GetTickCount64();
+    url = FoundryByPort();
+    Wh_Log(L"Foundry por puertos: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
+    if (!url.empty()) return true;
     std::string out;
-    if (!RunFoundry(L"server status", 15000, out)) {
+    if (!RunFoundry(L"server status", 8000, out)) {
         error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal», "
                 L"descarga un modelo con «foundry run phi-4-mini» y vuelve a abrir el navegador.";
         return false;
     }
     url = FirstLocalUrl(out);
-    for (const wchar_t* cmd : {L"service status", L"server start", L"service start"}) {
-        if (!url.empty()) break;
-        bool start = wcsstr(cmd, L"start") != nullptr;
-        std::string more;
-        RunFoundry(cmd, start ? 60000 : 15000, more);
-        if (start) {
-            more.clear();
-            RunFoundry(L"server status", 15000, more);
-            if (FirstLocalUrl(more).empty()) RunFoundry(L"service status", 15000, more);
-        }
-        url = FirstLocalUrl(more);
-        out += more;
+    if (url.empty()) {
+        RunFoundry(L"service status", 8000, out);
+        url = FirstLocalUrl(out);
     }
     if (url.empty()) {
-        std::wstring said = FromUtf8(out.substr(0, 300));
+        say(L"Arrancando Foundry Local");
+        std::string more;
+        RunFoundry(L"server start", 20000, more);
+        url = FoundryByPort();
+        if (url.empty()) {
+            RunFoundry(L"server status", 8000, more);
+            url = FirstLocalUrl(more);
+        }
+        out += more;
+    }
+    Wh_Log(L"Foundry por su comando: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
+    if (url.empty()) {
+        std::wstring said = FromUtf8(PlainLower(out).substr(0, 300));
         Wh_Log(L"Foundry Local no dio su dirección. Respondió: %s", said.c_str());
-        error = L"Foundry Local no está en marcha y no se pudo arrancar. En una terminal: «foundry server start» "
-                L"y «foundry run phi-4-mini». Si sigue, pon la dirección de «foundry server status» en la "
-                L"configuración del mod.";
+        error = L"No se encontró Foundry Local en marcha. En una terminal: «foundry server start» y "
+                L"«foundry model load phi-4-mini». Si sigue, pon su dirección (la de «foundry server status») "
+                L"en la configuración del mod.";
         return false;
     }
     return true;
 }
 
-static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error) {
+static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error,
+                           const SayFn& say = [](const std::wstring&) {}) {
     std::wstring key = std::to_wstring((int)st.provider) + L"|" + st.endpoint + L"|" + st.model;
     AcquireSRWLockShared(&g_backendLock);
     bool cached = !g_backend.base.empty() && key == g_backendKey;
@@ -888,7 +964,7 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
     if (b.base.empty()) {
         // Foundry Local cambia de puerto en cada arranque: se le pregunta.
         std::wstring url;
-        if (!FindFoundry(url, error)) return false;
+        if (!FindFoundry(url, error, say)) return false;
         b.base = url + L"/v1";
     } else if (b.base.size() < 3 || b.base.compare(b.base.size() - 3, 3, L"/v1") != 0) {
         if (b.base.find(L"/v1/") == std::wstring::npos && b.base.find(L"/openai") == std::wstring::npos) {
@@ -908,54 +984,42 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
         }
         std::vector<std::wstring> ids = JsonIds(r.body);
         if (st.provider == Provider::Foundry) {
-            // La API ofrece todo el catálogo: se elige entre lo cargado y, si
-            // no hay, lo descargado (nunca algo que habría que descargar).
+            // La API ofrece todo el catálogo, pero solo responde con lo
+            // cargado. Primero se le pregunta a ella (rápido: a un modelo sin
+            // cargar responde con un error al instante); los comandos de
+            // Foundry, que pueden colgarse desde el navegador, después.
+            say(L"Buscando el modelo cargado");
+            ULONGLONG t0 = GetTickCount64();
             std::vector<std::wstring> loaded = FoundryLoadedModels(b.base, st.apiKey);
-            // Solo cuenta lo que escribe un comando que terminó bien (las
-            // versiones viejas no tienen estas opciones).
-            auto list = [](const wchar_t* args, std::string& txt) {
-                std::string out;
-                DWORD code = 1;
-                bool ok = RunFoundry(args, 30000, out, &code) && code == 0 && !Trim(FromUtf8(out)).empty();
-                Wh_Log(L"foundry %s (%s): %s", args, ok ? L"bien" : L"falló",
-                       FromUtf8(PlainLower(out).substr(0, 600)).c_str());
-                if (ok) txt += out;
-                return ok;
-            };
-            std::string loadedTxt, cachedTxt;
-            bool cliKnows = list(L"model list --loaded", loadedTxt);
-            for (auto& id : ModelsIn(ids, loadedTxt)) loaded.push_back(id);
-            if (loaded.empty()) {
-                cliKnows = list(L"model list --cached", cachedTxt) || cliKnows;
-                if (ModelsIn(ids, cachedTxt).empty()) cliKnows = list(L"cache list", cachedTxt) || cliKnows;
-            }
-            std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
-            // Si el comando no nombró ninguno cargado, se le pregunta a la API.
-            std::wstring probed = loaded.empty() ? ProbeLoadedModel(b.base, cached.empty() ? ids : cached, st.apiKey)
-                                                 : L"";
-            if (probed.empty() && loaded.empty() && !cached.empty()) {
-                // Los descargados no respondieron: a lo mejor hay otro cargado.
-                std::vector<std::wstring> rest;
-                for (auto& id : ids) {
-                    if (std::find(cached.begin(), cached.end(), id) == cached.end()) rest.push_back(id);
-                }
-                probed = ProbeLoadedModel(b.base, rest, st.apiKey);
-            }
-            Wh_Log(L"Foundry: %d modelos en la API, %d cargados, %d descargados, respondió: %s", (int)ids.size(),
-                   (int)loaded.size(), (int)cached.size(), probed.empty() ? L"ninguno" : probed.c_str());
+            std::wstring probed = loaded.empty() ? ProbeLoadedModel(b.base, ids, st.apiKey) : L"";
+            Wh_Log(L"Foundry: %d modelos en la API, cargado: %s (%llu ms)", (int)ids.size(),
+                   !loaded.empty() ? loaded.front().c_str() : probed.empty() ? L"ninguno" : probed.c_str(),
+                   GetTickCount64() - t0);
             if (!loaded.empty()) {
                 b.model = PickModel(loaded);
             } else if (!probed.empty()) {
                 b.model = probed;
-            } else if (!cached.empty()) {
-                b.model = PickModel(cached);  // se cargará al preguntar
-            } else if (!cliKnows) {
-                b.model = PickModel(ids);  // el comando no sabe decirlo: lo que ofrezca la API
             } else {
-                error = L"No se encontró ningún modelo cargado ni descargado en Foundry Local. Carga uno con "
-                        L"«foundry model load phi-4-mini» o pon su nombre en Modelo, en la configuración del mod "
-                        L"(en Registros del mod, en Windhawk, está lo que respondió Foundry).";
-                return false;
+                // Ninguno cargado: uno descargado (se cargará al preguntar).
+                auto list = [](const wchar_t* args, std::string& txt) {
+                    std::string out;
+                    DWORD code = 1;
+                    ULONGLONG t = GetTickCount64();
+                    bool ok = RunFoundry(args, 10000, out, &code) && code == 0 && !Trim(FromUtf8(out)).empty();
+                    Wh_Log(L"foundry %s (%s, %llu ms): %s", args, ok ? L"bien" : L"falló", GetTickCount64() - t,
+                           FromUtf8(PlainLower(out).substr(0, 600)).c_str());
+                    if (ok) txt += out;
+                    return ok;
+                };
+                std::string cachedTxt;
+                if (!list(L"model list --cached", cachedTxt)) list(L"cache list", cachedTxt);
+                std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
+                if (cached.empty()) {
+                    error = L"No hay ningún modelo cargado en Foundry Local. Carga uno con «foundry model load "
+                            L"phi-4-mini» y vuelve a probar, o pon su nombre en Modelo, en la configuración del mod.";
+                    return false;
+                }
+                b.model = PickModel(cached);
             }
         } else {
             b.model = PickModel(ids);
@@ -1063,11 +1127,14 @@ static DWORD WINAPI AskThread(LPVOID param) {
     auto current = [&] { return g_askGen.load() == job->gen && !g_unloading; };
     Backend b;
     std::wstring error;
-    if (!ResolveBackend(st, b, error)) {
+    SayFn say = [&](const std::wstring& what) {
+        if (current()) UpdateAnswer([&](AnswerState& a) { a.status = what; });
+    };
+    if (!ResolveBackend(st, b, error, say)) {
         if (current()) UpdateAnswer([&](AnswerState& a) { a.error = error; a.done = true; a.waiting = false; });
         return 0;
     }
-    if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
+    if (current()) UpdateAnswer([&](AnswerState& a) { a.label = b.label; a.status.clear(); });
     SseReader sse;
     std::string whole;  // por si el servicio no responde por partes
     auto onText = [&](const std::wstring& t) {
@@ -1096,7 +1163,7 @@ static DWORD WINAPI AskThread(LPVOID param) {
     // puerto): se busca de nuevo y se reintenta una vez.
     if (!r.error.empty() && r.status == 0 && foundry && st.endpoint.empty()) {
         ForgetBackend();
-        if (ResolveBackend(st, b, error) && current()) {
+        if (ResolveBackend(st, b, error, say) && current()) {
             UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
             r = send();
             if (!current()) return 0;
