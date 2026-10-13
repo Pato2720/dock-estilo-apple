@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en el navegador y pregunta, define, explica o traduce ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.2
+// @version         1.3
 // @author          local
 // @include         chrome.exe
 // @include         msedge.exe
@@ -660,17 +660,22 @@ static std::wstring ProviderName(Provider p) {
 // Elige el modelo entre los que ofrece el servicio: los hechos para la NPU
 // primero y, entre ellos, los que responden rápido antes que los de
 // razonamiento (DeepSeek-R1 y compañía piensan mucho antes de contestar).
+static int ModelScore(const std::wstring& id) {
+    std::wstring low = id;
+    CharLowerBuffW(low.data(), (DWORD)low.size());
+    auto has = [&](const wchar_t* t) { return low.find(t) != std::wstring::npos; };
+    int score = 0;
+    if (has(L"npu")) score += 100;
+    if (has(L"r1") || has(L"reason") || has(L"qwq") || has(L"think")) score -= 30;
+    if (has(L"phi") || has(L"mini")) score += 10;
+    return score;
+}
+
 static std::wstring PickModel(const std::vector<std::wstring>& ids) {
     std::wstring best;
     int bestScore = -1000;
     for (auto& id : ids) {
-        std::wstring low = id;
-        CharLowerBuffW(low.data(), (DWORD)low.size());
-        auto has = [&](const wchar_t* t) { return low.find(t) != std::wstring::npos; };
-        int score = 0;
-        if (has(L"npu")) score += 100;
-        if (has(L"r1") || has(L"reason") || has(L"qwq") || has(L"think")) score -= 30;
-        if (has(L"phi") || has(L"mini")) score += 10;
+        int score = ModelScore(id);
         if (score > bestScore) {
             bestScore = score;
             best = id;
@@ -723,12 +728,46 @@ static std::vector<std::wstring> FoundryLoadedModels(const std::wstring& base, c
 
 // ¿Aparece el modelo en lo que escribió un comando de Foundry? Se busca sin
 // el número de versión (":4"), sin importar mayúsculas.
+// Texto de un comando sin los códigos de color de la terminal (ESC [ … letra),
+// en minúsculas.
+static std::string PlainLower(const std::string& text) {
+    std::string t;
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] == '\x1b' && i + 1 < text.size() && text[i + 1] == '[') {
+            i += 2;
+            while (i < text.size() && !isalpha((unsigned char)text[i])) i++;
+            continue;
+        }
+        t += (char)tolower((unsigned char)text[i]);
+    }
+    return t;
+}
+
 static bool MentionsModel(const std::string& text, const std::wstring& id) {
     std::wstring base = id.substr(0, id.rfind(L':') == std::wstring::npos ? id.size() : id.rfind(L':'));
-    std::string t = text, b = ToUtf8(base);
-    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return (char)tolower(c); });
-    std::transform(b.begin(), b.end(), b.begin(), [](unsigned char c) { return (char)tolower(c); });
+    std::string t = PlainLower(text), b = PlainLower(ToUtf8(base));
     return !b.empty() && t.find(b) != std::string::npos;
+}
+
+// ¿Aparece el alias del modelo («phi-4-mini» de «Phi-4-mini-instruct-…»)?
+// Se toman de la lista las palabras con guion y algún número.
+static bool MentionsAlias(const std::string& text, const std::wstring& id) {
+    std::string t = PlainLower(text), low = PlainLower(ToUtf8(id));
+    size_t i = 0;
+    while (i < t.size()) {
+        size_t j = i;
+        while (j < t.size() && (isalnum((unsigned char)t[j]) || t[j] == '-' || t[j] == '.' || t[j] == '_')) j++;
+        if (j > i) {
+            std::string word = t.substr(i, j - i);
+            bool dash = word.find('-') != std::string::npos;
+            bool digit = std::any_of(word.begin(), word.end(), [](unsigned char c) { return isdigit(c); });
+            if (dash && digit && word.size() >= 4 && low.compare(0, word.size(), word) == 0) return true;
+            i = j;
+        } else {
+            i++;
+        }
+    }
+    return false;
 }
 
 static std::vector<std::wstring> ModelsIn(const std::vector<std::wstring>& ids, const std::string& text) {
@@ -736,7 +775,32 @@ static std::vector<std::wstring> ModelsIn(const std::vector<std::wstring>& ids, 
     for (auto& id : ids) {
         if (MentionsModel(text, id)) out.push_back(id);
     }
+    if (out.empty()) {
+        for (auto& id : ids) {
+            if (MentionsAlias(text, id)) out.push_back(id);
+        }
+    }
     return out;
+}
+
+static bool IsNotLoadedError(std::wstring msg);
+
+// Pregunta a la API qué modelo está cargado: un pedido mínimo (un token) a
+// cada candidato, de mejor a peor, hasta que uno responda. No depende de
+// cómo escriba su lista el comando de Foundry.
+static std::wstring ProbeLoadedModel(const std::wstring& base, std::vector<std::wstring> ids, const std::wstring& key) {
+    std::stable_sort(ids.begin(), ids.end(),
+                     [](const std::wstring& a, const std::wstring& b) { return ModelScore(a) > ModelScore(b); });
+    int tries = 0;
+    for (auto& id : ids) {
+        if (++tries > 16 || g_unloading) break;
+        std::string body = "{\"model\":" + JsonString(ToUtf8(id)) +
+                           ",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}";
+        HttpResult r = HttpRequest(base + L"/chat/completions", "POST", body, key, nullptr, 60000);
+        if (!r.error.empty()) break;  // el servicio no responde: no tiene caso seguir
+        if (r.status == 200) return id;
+    }
+    return L"";
 }
 
 static bool IsNotLoadedError(std::wstring msg) {
@@ -852,11 +916,11 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
             auto list = [](const wchar_t* args, std::string& txt) {
                 std::string out;
                 DWORD code = 1;
-                if (RunFoundry(args, 30000, out, &code) && code == 0) {
-                    txt += out;
-                    return true;
-                }
-                return false;
+                bool ok = RunFoundry(args, 30000, out, &code) && code == 0 && !Trim(FromUtf8(out)).empty();
+                Wh_Log(L"foundry %s (%s): %s", args, ok ? L"bien" : L"falló",
+                       FromUtf8(PlainLower(out).substr(0, 600)).c_str());
+                if (ok) txt += out;
+                return ok;
             };
             std::string loadedTxt, cachedTxt;
             bool cliKnows = list(L"model list --loaded", loadedTxt);
@@ -866,17 +930,31 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
                 if (ModelsIn(ids, cachedTxt).empty()) cliKnows = list(L"cache list", cachedTxt) || cliKnows;
             }
             std::vector<std::wstring> cached = ModelsIn(ids, cachedTxt);
-            Wh_Log(L"Foundry: %d modelos en la API, %d cargados, %d descargados", (int)ids.size(), (int)loaded.size(),
-                   (int)cached.size());
+            // Si el comando no nombró ninguno cargado, se le pregunta a la API.
+            std::wstring probed = loaded.empty() ? ProbeLoadedModel(b.base, cached.empty() ? ids : cached, st.apiKey)
+                                                 : L"";
+            if (probed.empty() && loaded.empty() && !cached.empty()) {
+                // Los descargados no respondieron: a lo mejor hay otro cargado.
+                std::vector<std::wstring> rest;
+                for (auto& id : ids) {
+                    if (std::find(cached.begin(), cached.end(), id) == cached.end()) rest.push_back(id);
+                }
+                probed = ProbeLoadedModel(b.base, rest, st.apiKey);
+            }
+            Wh_Log(L"Foundry: %d modelos en la API, %d cargados, %d descargados, respondió: %s", (int)ids.size(),
+                   (int)loaded.size(), (int)cached.size(), probed.empty() ? L"ninguno" : probed.c_str());
             if (!loaded.empty()) {
                 b.model = PickModel(loaded);
+            } else if (!probed.empty()) {
+                b.model = probed;
             } else if (!cached.empty()) {
-                b.model = PickModel(cached);
+                b.model = PickModel(cached);  // se cargará al preguntar
             } else if (!cliKnows) {
                 b.model = PickModel(ids);  // el comando no sabe decirlo: lo que ofrezca la API
             } else {
-                error = L"No hay modelos descargados en Foundry Local. Descarga uno con «foundry run phi-4-mini» "
-                        L"o pon su nombre en Modelo, en la configuración del mod.";
+                error = L"No se encontró ningún modelo cargado ni descargado en Foundry Local. Carga uno con "
+                        L"«foundry model load phi-4-mini» o pon su nombre en Modelo, en la configuración del mod "
+                        L"(en Registros del mod, en Windhawk, está lo que respondió Foundry).";
                 return false;
             }
         } else {

@@ -225,6 +225,27 @@ int wmain() {
     Check(WaitAnswer(20000) && CurrentAnswer().error.empty() &&
               CurrentAnswer().label.find(L"Phi-4-mini-instruct-openvino-npu:2") != std::wstring::npos,
           "La siguiente vez usa el que ya está cargado");
+    // Si la lista no nombra los modelos (solo alias o nada), se le pregunta a la API.
+    struct Case {
+        const wchar_t* mode;
+        const char* loaded;
+        const char* what;
+    };
+    for (const Case& c : {Case{L"silent", "Phi-4-mini-instruct-openvino-npu:2", "Si la lista no dice nada, encuentra el cargado preguntando a la API"},
+                          Case{L"alias", "DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", "Con una lista de alias (y colores), encuentra el cargado"}}) {
+        SetEnvironmentVariableW(L"FAKE_FOUNDRY", c.mode);
+        FILE* f = fopen("cargado.txt", "wb");
+        if (f) {
+            fputs(c.loaded, f);
+            fclose(f);
+        }
+        ForgetBackend();
+        MarkAsk();
+        StartAsk(Action::Define, L"hola", L"");
+        bool ok = WaitAnswer(20000) && CurrentAnswer().error.empty();
+        printf("    %ls: %ls %ls\n", c.mode, CurrentAnswer().label.c_str(), CurrentAnswer().error.c_str());
+        Check(ok && CurrentAnswer().label.find(FromUtf8(c.loaded)) != std::wstring::npos, c.what);
+    }
     ForgetBackend();
     Defaults(L"http://127.0.0.1:8765/v1");
     LoadSettings();
