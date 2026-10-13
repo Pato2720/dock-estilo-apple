@@ -103,7 +103,8 @@ static void DrawSample(const char* path, HTHEME theme, bool dark) {
 
     RECT all{0, 0, W, H};
     DrawThemeBackground_Hook(theme, dc, kPopupBackground, 0, &all, nullptr);
-    DrawThemeBackground_Hook(theme, dc, kPopupGutter, 0, &all, nullptr);
+    RECT gutterRc{pad, pad, pad + gutter - 4, H - pad};
+    DrawThemeBackground_Hook(theme, dc, kPopupGutter, 0, &gutterRc, nullptr);
     int y = pad;
     for (auto& r : kRows) {
         if (r.sep) {
@@ -120,10 +121,12 @@ static void DrawSample(const char* path, HTHEME theme, bool dark) {
             DrawThemeBackground_Hook(theme, dc, kPopupCheck, r.check, &cr, nullptr);
         }
         // El texto lo pinta Windows con el color que le pasa el mod.
-        SetTextColor(dc, ItemTextColor(r.state, dark));
+        SetTextColor(dc, ItemTextColor(r.state, dark, false));
         RECT tr{pad + gutter, y, W - pad - 28, y + rowH};
         DrawTextW(dc, r.text, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
         if (r.shortcut) {
+            // El atajo va aparte, alineado a la derecha (como lo hace Windows).
+            SetTextColor(dc, ItemTextColor(r.state, dark, true));
             DrawTextW(dc, r.shortcut, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
         }
         if (r.submenu) {
@@ -149,11 +152,31 @@ static void DrawSample(const char* path, HTHEME theme, bool dark) {
 
 int wmain() {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    g_testSettings[L"highlight"] = L"neutral";
-    g_testSettings[L"corners"] = L"round";
-    g_testSettings[L"border"] = L"1";
-    g_testSettings[L"menuBar"] = L"1";
-    g_testSettings[L"classicExplorer"] = L"0";
+    auto defaults = [] {
+        g_testSettings.clear();
+        g_testSettings[L"theme"] = L"auto";
+        g_testSettings[L"palette"] = L"graphite";
+        g_testSettings[L"highlight"] = L"gray";
+        g_testSettings[L"highlightColor"] = L"#0A84FF";
+        g_testSettings[L"highlightIntensity"] = L"100";
+        g_testSettings[L"highlightShape"] = L"pill";
+        g_testSettings[L"highlightRadius"] = L"6";
+        g_testSettings[L"highlightMargin"] = L"5";
+        g_testSettings[L"separator"] = L"line";
+        g_testSettings[L"checkStyle"] = L"check";
+        g_testSettings[L"arrowStyle"] = L"chevron";
+        g_testSettings[L"dimShortcuts"] = L"1";
+        g_testSettings[L"showGutter"] = L"0";
+        g_testSettings[L"corners"] = L"round";
+        g_testSettings[L"border"] = L"1";
+        g_testSettings[L"menuBar"] = L"1";
+        g_testSettings[L"animation"] = L"system";
+        g_testSettings[L"submenuDelay"] = L"-1";
+        g_testSettings[L"accessKeys"] = L"0";
+        g_testSettings[L"classicExplorer"] = L"0";
+        LoadSettings();
+    };
+    defaults();
     Check(Wh_ModInit(), "Wh_ModInit engancha uxtheme");
 
     printf("== Clases de tema ==\n");
@@ -193,8 +216,39 @@ int wmain() {
     }
     Check(!IsStyledPart(1) && !IsStyledPart(7) && IsStyledPart(kPopupItem) && IsStyledPart(kPopupItemFocusable),
           "Solo las partes de los menús");
-    Check(ItemTextColor(2, false) == RGB(28, 28, 30) && ItemTextColor(3, true) == RGB(140, 140, 146),
+    Check(ItemTextColor(2, false, false) == RGB(28, 28, 30) && ItemTextColor(3, true, false) == RGB(140, 140, 146),
           "Colores del texto como el menú del Dock");
+    Check(ItemTextColor(1, false, true) == RGB(150, 150, 156), "Los atajos de teclado van en gris");
+    {
+        Palette lp = MakePalette(CurrentStyle(), false);
+        Check(lp.hilite == RGB(0, 0, 0) && lp.hiliteA < 0.12f && Luma(Mix(lp.bg, lp.hilite, lp.hiliteA)) > 210,
+              "El resaltado de fábrica es gris claro");
+    }
+
+    printf("== Configuración ==\n");
+    Check(ParseColor(L"#0A84FF") == RGB(10, 132, 255) && ParseColor(L"fff") == RGB(255, 255, 255) &&
+              ParseColor(L"") == kNoColor && ParseColor(L"#12345G") == kNoColor,
+          "Colores en #RRGGBB, RRGGBB o #RGB");
+    Check(IsExcluded(L"Chrome.exe; code", L"code.exe") && IsExcluded(L"Chrome.exe; code", L"chrome.exe") &&
+              !IsExcluded(L"Chrome.exe; code", L"notepad.exe") && !IsExcluded(L"", L"notepad.exe"),
+          "Apps excluidas, con o sin .exe y sin importar mayúsculas");
+    g_testSettings[L"dimShortcuts"] = L"0";
+    LoadSettings();
+    Check(ItemTextColor(1, false, true) == RGB(28, 28, 30), "Sin la opción, el atajo va como el nombre");
+    g_testSettings[L"darkBackground"] = L"#FAFAFA";
+    g_testSettings[L"highlight"] = L"custom";
+    g_testSettings[L"highlightColor"] = L"#FFD60A";
+    LoadSettings();
+    {
+        Palette p = MakePalette(CurrentStyle(), true);
+        Check(!p.dark && p.bg == RGB(250, 250, 250) && Luma(p.text) < 100,
+              "Un fondo propio claro en el tema oscuro lleva texto oscuro");
+        Check(Luma(p.hotText) < 100, "Sobre un resaltado propio claro, el texto va oscuro");
+    }
+    g_testSettings[L"theme"] = L"dark";
+    LoadSettings();
+    Check(MenuTheme(light, mem, d) && d, "Con el tema forzado a oscuro, un menú claro se pinta oscuro");
+    defaults();
     {
         // El marco se pinta sin tapar las opciones de adentro.
         BITMAPINFO bi{};
@@ -239,15 +293,55 @@ int wmain() {
     RegDeleteTreeW(HKEY_CURRENT_USER, kClassicMenuKey);
     g_isExplorer = false;
 
+    printf("== Ajustes de Windows ==\n");
+    {
+        DWORD delay0 = 0;
+        SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &delay0, 0);
+        bool anim0 = GetSpiBool(SPI_GETMENUANIMATION);
+        g_isExplorer = true;
+        g_testSettings[L"submenuDelay"] = L"120";
+        g_testSettings[L"animation"] = L"none";
+        LoadSettings();
+        ApplySystemMenuSettings(CurrentStyle());
+        DWORD delay1 = 0;
+        SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &delay1, 0);
+        Check(delay1 == 120 && !GetSpiBool(SPI_GETMENUANIMATION), "Aplica el retraso de los submenús y la animación");
+        RestoreSystemMenuSettings();
+        DWORD delay2 = 0;
+        SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, &delay2, 0);
+        Check(delay2 == delay0 && GetSpiBool(SPI_GETMENUANIMATION) == anim0, "Y al desactivarlo vuelven como estaban");
+        g_isExplorer = false;
+        defaults();
+    }
+
     printf("== Muestras ==\n");
     CreateDirectoryW(L"out", nullptr);
-    DrawSample("out\\menu-claro.bgra", light, false);
-    DrawSample("out\\menu-oscuro.bgra", dark, true);
-    g_testSettings[L"highlight"] = L"accent";
-    Wh_ModSettingsChanged();
-    DrawSample("out\\menu-claro-acento.bgra", light, false);
-    DrawSample("out\\menu-oscuro-acento.bgra", dark, true);
-    Check(true, "Muestras en out\\menu-*.bgra");
+    struct Variant {
+        const char* file;
+        bool dark;
+        std::map<std::wstring, std::wstring> set;
+    };
+    const Variant variants[] = {
+        {"out\\1-grafito-claro.bgra", false, {}},
+        {"out\\2-grafito-oscuro.bgra", true, {}},
+        {"out\\3-arena-contorno.bgra", false,
+         {{L"palette", L"sand"}, {L"highlightShape", L"outline"}, {L"checkStyle", L"box"}, {L"separator", L"dots"}}},
+        {"out\\4-hielo-barra.bgra", true,
+         {{L"palette", L"ice"}, {L"highlightShape", L"bar"}, {L"arrowStyle", L"triangle"}, {L"showGutter", L"1"}}},
+        {"out\\5-acento-renglon.bgra", false,
+         {{L"highlight", L"accent"}, {L"highlightShape", L"full"}, {L"separator", L"thick"}}},
+        {"out\\6-contraste-propio.bgra", true,
+         {{L"palette", L"contrast"}, {L"highlight", L"custom"}, {L"highlightColor", L"#FF9F0A"},
+          {L"highlightRadius", L"12"}, {L"checkStyle", L"dot"}}},
+    };
+    for (auto& v : variants) {
+        defaults();
+        for (auto& kv : v.set) g_testSettings[kv.first] = kv.second;
+        LoadSettings();
+        DrawSample(v.file, v.dark ? dark : light, v.dark);
+    }
+    defaults();
+    Check(true, "Muestras en out\\*.bgra");
 
     Wh_ModUninit();
     printf("Resultado: %d bien, %d fallas\n", g_pass, g_fail);

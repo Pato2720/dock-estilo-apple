@@ -79,8 +79,18 @@ segundo.
 
 Mod aparte, en su propia carpeta: [`menu-estilo-apple/`](menu-estilo-apple/).
 Cambia el estilo de los menús del clic derecho y de los menús desplegables en
-el escritorio, el Explorador y las aplicaciones, con los mismos colores que el
-menú del Dock. No necesita el Dock.
+el escritorio, el Explorador y las aplicaciones: paletas (una con los colores
+del menú del Dock), resaltado en gris claro u otros colores y formas,
+separadores, marcas, animaciones, retraso de los submenús y apps excluidas.
+No necesita el Dock.
+
+## Consulta rápida al seleccionar
+
+Mod aparte, en [`consulta-rapida/`](consulta-rapida/): seleccionas texto en el
+navegador, tocas **Preguntar** y una ventanita lo define, explica, resume o
+traduce, o responde lo que le preguntes, con un modelo local en la NPU
+(Foundry Local), Ollama u otro servicio compatible con OpenAI. Sin abrir
+Copilot.
 
 ## Herramientas
 
