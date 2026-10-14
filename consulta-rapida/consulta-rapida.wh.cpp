@@ -2,7 +2,7 @@
 // @id              consulta-rapida
 // @name            Consulta rápida al seleccionar
 // @description     Selecciona texto en cualquier app y pregunta, define, explica, traduce o responde ahí mismo en una ventanita, con un modelo local en la NPU (Foundry Local) u otro servicio
-// @version         1.7
+// @version         1.8
 // @author          local
 // @include         explorer.exe
 // @compilerOptions -lwinhttp -liphlpapi -lole32 -loleaut32 -luuid -ldwmapi -lgdi32 -luser32 -ladvapi32
@@ -41,10 +41,22 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
 
 * Selecciona texto y toca **Preguntar** (aparece junto al mouse unos
   segundos), o selecciona y pulsa el atajo (Ctrl+Mayús+Espacio de fábrica).
-* Con una a tres palabras empieza definiendo; si lo seleccionado es una
-  pregunta («¿…?»), respondiéndola; con más, explicando. Los botones
-  (Definir, Explicar, Resumir, Traducir, Pregunta) cambian la acción y abajo
-  puedes escribir tu propia pregunta.
+* La ventanita no genera nada hasta que eliges: Definir, Explicar, Resumir,
+  Traducir o Pregunta (responde la pregunta seleccionada), o escribes tu
+  propia pregunta abajo. Mientras eliges, el mod prepara el modelo en
+  segundo plano. En la configuración ("Al tocar Preguntar") puede empezar
+  solo, como antes.
+* **Foundry Local arranca solo**: si está apagado (después de reiniciar o de
+  cerrarlo), el mod lo inicia en segundo plano al abrir la ventanita y deja
+  el modelo cargado; abajo dice en qué paso va. Tras un rato sin consultas
+  (10 minutos de fábrica) lo **detiene**, liberando la NPU y la memoria, y
+  la ventanita también se libera; la próxima vez arranca otra vez.
+* **Cristal (liquid glass)**: fondo translúcido sobre lo de atrás
+  desenfocado, con reflejo y borde brillante. Las animaciones (aparecer,
+  crecer con la respuesta, los botones, los puntos de "pensando") van a 120
+  cuadros por segundo, o a la frecuencia de la pantalla si es mayor. Si
+  Windows tiene apagados los efectos de transparencia o las animaciones, se
+  respeta.
 * Cambiar de botón mientras responde funciona: si el modelo sigue ocupado
   con la respuesta anterior (la NPU atiende de a una), el mod espera a que
   se libere y pide la nueva. Volver a un botón ya respondido la muestra al
@@ -110,14 +122,23 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
   - ctrlAltSpace: Ctrl+Alt+Espacio
   - altQ: Alt+Q
   - none: Ninguno
-- defaultAction: auto
-  $name: Al abrir
+- onOpen: wait
+  $name: Al tocar Preguntar
   $options:
+  - wait: Esperar a que elija qué hacer
   - auto: Definir una palabra, responder una pregunta, explicar un texto más largo
   - define: Siempre definir
   - explain: Siempre explicar
   - answer: Siempre responder (como pregunta)
-  - none: Esperar a que elija
+- foundryIdle: 10
+  $name: Apagar Foundry Local si no se usa
+  $description: Lo detiene (y libera la NPU y la memoria) tras ese tiempo sin consultas; al volver a abrir la ventanita arranca solo
+  $options:
+  - 5: A los 5 minutos
+  - 10: A los 10 minutos
+  - 30: A los 30 minutos
+  - 60: A la hora
+  - 0: Nunca
 - answerLanguage: español
   $name: Idioma de las respuestas
 - translateTo: inglés
@@ -130,6 +151,9 @@ solo se lo deja a apps empaquetadas con un permiso de Microsoft.
   $options:
   - clipboard: Copiarla y devolver el portapapeles como estaba
   - uia: Accesibilidad de Windows (sin copiar; si falla, copiarla)
+- glass: true
+  $name: Efecto de cristal (liquid glass)
+  $description: Fondo translúcido y desenfocado, con brillo en los bordes. Si Windows tiene apagados los efectos de transparencia, la ventanita queda opaca
 - theme: auto
   $name: Tema de la ventanita
   $options:
@@ -177,9 +201,10 @@ enum : UINT {
     WM_APP_SUBMIT,                  // Enter en la caja de la pregunta
     WM_APP_CHAR,                    // wParam = letra escrita en la caja
     WM_APP_EDITKEY,                 // wParam = tecla de edición (Retroceso, Enter…), lParam = con Ctrl
+    WM_APP_USED,                    // se usó el servicio: vuelve a contar el tiempo sin uso
 };
 
-enum : UINT_PTR { TIMER_PILL_ASK = 1, TIMER_PILL_HIDE, TIMER_DOTS, TIMER_CARET, TIMER_TOP };
+enum : UINT_PTR { TIMER_PILL_ASK = 1, TIMER_PILL_HIDE, TIMER_CARET, TIMER_TOP, TIMER_IDLE };
 
 // Atributos de DWM de Windows 11 (no están en todos los encabezados).
 constexpr DWORD kDwmDarkMode = 20, kDwmCornerPreference = 33, kDwmBorderColor = 34;
@@ -213,6 +238,8 @@ struct Settings {
     int maxTokens = 400;
     bool uia = false;
     ThemeMode theme = ThemeMode::Auto;
+    bool glass = true;
+    int idleMinutes = 10;  // 0 = no apagar Foundry
 };
 
 static SRWLOCK g_setLock = SRWLOCK_INIT;
@@ -260,10 +287,12 @@ static void LoadSettings() {
     std::wstring h = StringSetting(L"hotkey");
     s.hotkey = h == L"ctrlAltSpace" ? Hotkey::CtrlAltSpace : h == L"altQ" ? Hotkey::AltQ
              : h == L"none" ? Hotkey::None : Hotkey::CtrlShiftSpace;
-    std::wstring a = StringSetting(L"defaultAction");
+    std::wstring a = StringSetting(L"onOpen");
     s.defaultAction = a == L"define" ? DefaultAction::Define : a == L"explain" ? DefaultAction::Explain
-                    : a == L"answer" ? DefaultAction::Answer : a == L"none" ? DefaultAction::None
-                                     : DefaultAction::Auto;
+                    : a == L"answer" ? DefaultAction::Answer : a == L"auto" ? DefaultAction::Auto
+                                     : DefaultAction::None;
+    s.glass = Wh_GetIntSetting(L"glass") != 0;
+    s.idleMinutes = std::clamp(_wtoi(StringSetting(L"foundryIdle").c_str()), 0, 600);
     s.language = Trim(StringSetting(L"answerLanguage"));
     if (s.language.empty()) s.language = L"español";
     s.translateTo = Trim(StringSetting(L"translateTo"));
@@ -550,7 +579,7 @@ struct HttpResult {
 // false, se corta).
 static HttpResult HttpRequest(const std::wstring& url, const char* method, const std::string& body,
                               const std::wstring& apiKey, const std::function<bool(const char*, size_t)>& onData,
-                              DWORD receiveTimeoutMs) {
+                              DWORD receiveTimeoutMs, bool abortable = true) {
     HttpResult r;
     URL_COMPONENTS uc{sizeof(uc)};
     wchar_t host[256] = {}, path[2048] = {};
@@ -580,9 +609,11 @@ static HttpResult HttpRequest(const std::wstring& url, const char* method, const
                                               https ? WINHTTP_FLAG_SECURE : 0)
                          : nullptr;
     if (req) {
-        AcquireSRWLockExclusive(&g_reqLock);
-        g_reqHandle = req;
-        ReleaseSRWLockExclusive(&g_reqLock);
+        if (abortable) {
+            AcquireSRWLockExclusive(&g_reqLock);
+            g_reqHandle = req;
+            ReleaseSRWLockExclusive(&g_reqLock);
+        }
         std::wstring headers = L"Content-Type: application/json\r\nAccept: text/event-stream, application/json\r\n";
         if (!apiKey.empty()) headers += L"Authorization: Bearer " + apiKey + L"\r\n";
         BOOL ok = WinHttpSendRequest(req, headers.c_str(), (DWORD)-1L, (LPVOID)(body.empty() ? nullptr : body.data()),
@@ -610,11 +641,10 @@ static HttpResult HttpRequest(const std::wstring& url, const char* method, const
                                                                                           : L"Falló la conexión con " + url;
         }
         AcquireSRWLockExclusive(&g_reqLock);
-        if (g_reqHandle == req) {
-            WinHttpCloseHandle(req);
-            g_reqHandle = nullptr;
-        }
+        if (g_reqHandle == req) g_reqHandle = nullptr;
+        else if (abortable) req = nullptr;  // ya la cerró AbortRequest
         ReleaseSRWLockExclusive(&g_reqLock);
+        if (req) WinHttpCloseHandle(req);
     } else {
         r.error = L"No se pudo preparar la conexión con " + url;
     }
@@ -906,10 +936,15 @@ static bool RunFoundry(const std::wstring& args, DWORD timeoutMs, std::string& o
 
 using SayFn = std::function<void(const std::wstring&)>;
 
-// Puertos en los que escuchan los procesos de Foundry Local (sin correr su
-// comando: lanzado desde otro programa, «foundry …» puede quedarse colgado).
-static std::vector<USHORT> FoundryListenPorts() {
-    std::vector<USHORT> ports;
+// Procesos de Foundry Local que escuchan en un puerto (sin correr su comando:
+// lanzado desde otro programa, «foundry …» puede quedarse colgado).
+struct Listener {
+    DWORD pid;
+    USHORT port;
+};
+
+static std::vector<Listener> FoundryListeners() {
+    std::vector<Listener> ports;
     auto isFoundry = [](DWORD pid) {
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!h) return false;
@@ -923,9 +958,11 @@ static std::vector<USHORT> FoundryListenPorts() {
         name = name ? name + 1 : path;
         return wcsstr(name, L"foundry") != nullptr || wcsstr(name, L"inference.service") != nullptr;
     };
-    auto add = [&](DWORD port) {
+    auto add = [&](DWORD pid, DWORD port) {
         USHORT p = (USHORT)(((port & 0xFF) << 8) | ((port >> 8) & 0xFF));  // orden de red
-        if (p && std::find(ports.begin(), ports.end(), p) == ports.end()) ports.push_back(p);
+        bool have = false;
+        for (auto& l : ports) have = have || l.port == p;
+        if (p && !have) ports.push_back(Listener{pid, p});
     };
     constexpr ULONG kInet = 2, kInet6 = 23;  // AF_INET, AF_INET6 (sin incluir Winsock)
     for (ULONG family : {kInet, kInet6}) {
@@ -938,12 +975,12 @@ static std::vector<USHORT> FoundryListenPorts() {
         if (family == kInet) {
             auto* t = (MIB_TCPTABLE_OWNER_PID*)buf.data();
             for (DWORD i = 0; i < t->dwNumEntries; i++) {
-                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwOwningPid, t->table[i].dwLocalPort);
             }
         } else {
             auto* t = (MIB_TCP6TABLE_OWNER_PID*)buf.data();
             for (DWORD i = 0; i < t->dwNumEntries; i++) {
-                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwLocalPort);
+                if (isFoundry(t->table[i].dwOwningPid)) add(t->table[i].dwOwningPid, t->table[i].dwLocalPort);
             }
         }
     }
@@ -957,16 +994,104 @@ static bool AnswersModels(const std::wstring& root) {
 }
 
 // Para el banco de pruebas: Wine no dice de qué proceso es cada puerto.
-static std::vector<USHORT> (*g_foundryPorts)() = FoundryListenPorts;
+static std::vector<Listener> (*g_foundryListeners)() = FoundryListeners;
 
 static std::wstring FoundryByPort() {
-    for (USHORT port : g_foundryPorts()) {
+    for (const Listener& l : g_foundryListeners()) {
         for (const wchar_t* host : {L"http://127.0.0.1:", L"http://localhost:"}) {
-            std::wstring root = host + std::to_wstring(port);
+            std::wstring root = host + std::to_wstring(l.port);
             if (AnswersModels(root)) return root;
         }
     }
     return L"";
+}
+
+// Corre un comando de Foundry sin esperarlo ni compartirle nada (ni la
+// salida ni otros identificadores): el servicio que deja corriendo no queda
+// atado al mod. Devuelve el proceso del comando, o nullptr si no existe.
+static HANDLE LaunchFoundry(const std::wstring& args) {
+    auto launch = [](std::wstring cmd) -> HANDLE {
+        STARTUPINFOW si{sizeof(si)};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                            nullptr, nullptr, &si, &pi)) {
+            return nullptr;
+        }
+        CloseHandle(pi.hThread);
+        return pi.hProcess;
+    };
+    HANDLE h = launch(L"foundry " + args);
+    wchar_t local[MAX_PATH] = {};
+    if (!h && ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\WindowsApps\\foundry.exe", local, MAX_PATH) &&
+        GetFileAttributesW(local) != INVALID_FILE_ATTRIBUTES) {
+        h = launch(L"\"" + std::wstring(local) + L"\" " + args);
+    }
+    return h;
+}
+
+// Arranca Foundry Local en segundo plano (después de reiniciar el equipo o
+// de cerrarlo) y espera a que su API responda. installed = existe el
+// comando «foundry».
+static std::wstring StartFoundry(bool& installed) {
+    ULONGLONG t0 = GetTickCount64();
+    std::vector<HANDLE> launched;
+    if (HANDLE h = LaunchFoundry(L"server start")) launched.push_back(h);
+    installed = !launched.empty();
+    std::wstring url;
+    bool triedOld = false;
+    while (installed && !g_unloading && GetTickCount64() - t0 < 90000) {
+        url = FoundryByPort();
+        if (!url.empty()) break;
+        // Si el comando ya terminó con error, prueba el de antes
+        // («foundry service start»); si ese también falla, no hay caso.
+        bool failed = true;
+        for (HANDLE p : launched) {
+            DWORD code = STILL_ACTIVE;
+            GetExitCodeProcess(p, &code);
+            if (code == STILL_ACTIVE || code == 0) failed = false;
+        }
+        if (failed) {
+            if (triedOld) break;
+            triedOld = true;
+            HANDLE h = LaunchFoundry(L"service start");
+            if (!h) break;
+            launched.push_back(h);
+        }
+        Sleep(400);
+    }
+    // Un comando que se quedó colgado se cierra (si no es el servicio mismo).
+    std::vector<Listener> now = url.empty() ? std::vector<Listener>{} : g_foundryListeners();
+    for (HANDLE p : launched) {
+        DWORD pid = GetProcessId(p);
+        bool isService = false;
+        for (auto& l : now) isService = isService || l.pid == pid;
+        if (!isService && WaitForSingleObject(p, 0) == WAIT_TIMEOUT) TerminateProcess(p, 1);
+        CloseHandle(p);
+    }
+    Wh_Log(L"Foundry arrancado en segundo plano: %s (%llu ms)", url.empty() ? L"no" : url.c_str(),
+           GetTickCount64() - t0);
+    return url;
+}
+
+// Detiene Foundry Local (y con él el modelo en la NPU): con su comando y, si
+// no responde, cerrando sus procesos.
+static void StopFoundry() {
+    if (g_foundryListeners().empty()) return;  // ya estaba apagado
+    ULONGLONG t0 = GetTickCount64();
+    std::string out;
+    DWORD code = 1;
+    if (!RunFoundry(L"server stop", 15000, out, &code) || code != 0) RunFoundry(L"service stop", 15000, out, &code);
+    for (int i = 0; i < 25 && !g_unloading && !g_foundryListeners().empty(); i++) Sleep(200);
+    int killed = 0;
+    for (const Listener& l : g_unloading ? std::vector<Listener>{} : g_foundryListeners()) {
+        if (HANDLE p = OpenProcess(PROCESS_TERMINATE, FALSE, l.pid)) {
+            killed += TerminateProcess(p, 0) ? 1 : 0;
+            CloseHandle(p);
+        }
+    }
+    Wh_Log(L"Foundry detenido por no usarse (%llu ms%s)", GetTickCount64() - t0, killed ? L", cerrando sus procesos" : L"");
 }
 
 // Dirección del servicio de Foundry Local (http://127.0.0.1:PUERTO). Primero
@@ -979,8 +1104,13 @@ static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say
     url = FoundryByPort();
     Wh_Log(L"Foundry por puertos: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
     if (!url.empty()) return true;
+    // Apagado: se arranca solo, en segundo plano, y se espera a que responda.
+    say(L"Iniciando Foundry Local");
+    bool installed = false;
+    url = StartFoundry(installed);
+    if (!url.empty()) return true;
     std::string out;
-    if (!RunFoundry(L"server status", 8000, out)) {
+    if (!installed || !RunFoundry(L"server status", 8000, out)) {
         error = L"No se encontró Foundry Local. Instálalo con «winget install Microsoft.FoundryLocal», "
                 L"descarga un modelo con «foundry run phi-4-mini» y vuelve a intentarlo.";
         return false;
@@ -989,17 +1119,6 @@ static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say
     if (url.empty()) {
         RunFoundry(L"service status", 8000, out);
         url = FirstLocalUrl(out);
-    }
-    if (url.empty()) {
-        say(L"Arrancando Foundry Local");
-        std::string more;
-        RunFoundry(L"server start", 20000, more);
-        url = FoundryByPort();
-        if (url.empty()) {
-            RunFoundry(L"server status", 8000, more);
-            url = FirstLocalUrl(more);
-        }
-        out += more;
     }
     Wh_Log(L"Foundry por su comando: %s (%llu ms)", url.empty() ? L"no" : url.c_str(), GetTickCount64() - t0);
     if (url.empty()) {
@@ -1011,6 +1130,13 @@ static bool FindFoundry(std::wstring& url, std::wstring& error, const SayFn& say
         return false;
     }
     return true;
+}
+
+// El último modelo de Foundry que respondió (sirve después de reiniciar).
+static std::wstring LastModel() {
+    wchar_t buf[256] = {};
+    Wh_GetStringValue(L"lastModel", buf, ARRAYSIZE(buf));
+    return buf;
 }
 
 static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error,
@@ -1067,6 +1193,9 @@ static bool ResolveBackend(const Settings& st, Backend& out, std::wstring& error
                 b.model = PickModel(loaded);
             } else if (!probed.empty()) {
                 b.model = probed;
+            } else if (std::wstring last = LastModel();
+                       !last.empty() && std::find(ids.begin(), ids.end(), last) != ids.end()) {
+                b.model = last;  // el que se usó la última vez (se cargará al preguntar)
             } else {
                 // Ninguno cargado: uno descargado (se cargará al preguntar).
                 auto list = [](const wchar_t* args, std::string& txt) {
@@ -1126,6 +1255,7 @@ struct AnswerState {
     bool done = false;
     bool waiting = false;  // todavía sin la primera palabra
     std::wstring status;   // qué está haciendo (si tarda), por ejemplo cargar el modelo
+    std::wstring prep;     // preparando el servicio en segundo plano (arrancarlo, cargar el modelo)
     uint64_t gen = 0;      // de qué consulta es
 };
 
@@ -1182,6 +1312,11 @@ struct SseReader {
     }
 };
 
+static SRWLOCK g_prepLock = SRWLOCK_INIT;     // preparar el servicio, de a uno
+static std::atomic<bool> g_foundryUsed{false};  // hay que apagarlo si no se usa
+static std::atomic<bool> g_warming{false};
+static std::atomic<HWND> g_hostWnd{nullptr};
+
 struct AskJob {
     uint64_t gen = 0;
     Action action = Action::Explain;
@@ -1198,7 +1333,16 @@ static DWORD WINAPI AskThread(LPVOID param) {
     SayFn say = [&](const std::wstring& what) {
         if (current()) UpdateAnswer([&](AnswerState& a) { a.status = what; });
     };
-    if (!ResolveBackend(st, b, error, say)) {
+    // Si se está preparando en segundo plano (arrancando Foundry, cargando el
+    // modelo), se espera a eso en vez de hacerlo dos veces.
+    if (!TryAcquireSRWLockExclusive(&g_prepLock)) {
+        say(L"Preparando el modelo");
+        AcquireSRWLockExclusive(&g_prepLock);
+    }
+    bool resolved = ResolveBackend(st, b, error, say);
+    ReleaseSRWLockExclusive(&g_prepLock);
+    if (st.provider == Provider::Foundry) g_foundryUsed = true;
+    if (!resolved) {
         if (current()) UpdateAnswer([&](AnswerState& a) { a.error = error; a.done = true; a.waiting = false; });
         return 0;
     }
@@ -1295,6 +1439,8 @@ static DWORD WINAPI AskThread(LPVOID param) {
             UpdateAnswer([&](AnswerState& a) { a.raw = t; });
         }
     }
+    if (foundry && gotText) Wh_SetStringValue(L"lastModel", b.model.c_str());
+    if (HWND h = g_hostWnd.load()) PostMessageW(h, WM_APP_USED, 0, 0);
     UpdateAnswer([&](AnswerState& a) {
         a.done = true;
         a.waiting = false;
@@ -1308,6 +1454,57 @@ static DWORD WINAPI AskThread(LPVOID param) {
     return 0;
 }
 
+// Al abrir la ventanita, mientras se elige qué hacer: encuentra (o arranca)
+// el servicio y deja el modelo cargado, para que responda en cuanto se pida.
+static DWORD WINAPI WarmThread(LPVOID) {
+    WorkerScope scope;
+    Settings st = CurrentSettings();
+    auto prep = [](const std::wstring& w) { UpdateAnswer([&](AnswerState& a) { a.prep = w; }); };
+    AcquireSRWLockExclusive(&g_prepLock);
+    Backend b;
+    std::wstring error;
+    bool ok = ResolveBackend(st, b, error, prep);
+    if (ok) UpdateAnswer([&](AnswerState& a) { a.label = b.label; });
+    if (ok && st.provider == Provider::Foundry && !g_unloading) {
+        g_foundryUsed = true;
+        // Una consulta mínima: si el modelo no está cargado, se carga ya.
+        std::string body = "{\"model\":" + JsonString(ToUtf8(b.model)) +
+                           ",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}";
+        HttpResult r = HttpRequest(b.base + L"/chat/completions", "POST", body, st.apiKey, nullptr, 60000);
+        if (r.error.empty() && r.status != 200 && IsNotLoadedError(ServiceError(r)) && !g_unloading) {
+            prep(L"Cargando el modelo");
+            bool loaded = LoadFoundryModel(b.base, b.model, st.apiKey);
+            Wh_Log(L"Precarga de %s: %s", b.model.c_str(), loaded ? L"lista" : L"no se pudo");
+        }
+    }
+    if (!ok) Wh_Log(L"Precarga: %s", error.c_str());
+    prep(L"");
+    ReleaseSRWLockExclusive(&g_prepLock);
+    g_warming = false;
+    if (HWND h = g_hostWnd.load()) PostMessageW(h, WM_APP_USED, 0, 0);
+    return 0;
+}
+
+static void StartWarmup() {
+    if (g_warming.exchange(true)) return;
+    HANDLE t = CreateThread(nullptr, 0, WarmThread, nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
+    else g_warming = false;
+}
+
+// Tras un rato sin uso: Foundry Local se detiene (libera la NPU y la
+// memoria). Corre aparte: su comando puede tardar.
+static DWORD WINAPI SleepThread(LPVOID) {
+    WorkerScope scope;
+    AcquireSRWLockExclusive(&g_prepLock);
+    StopFoundry();
+    ForgetBackend();
+    ReleaseSRWLockExclusive(&g_prepLock);
+    return 0;
+}
+
+static UINT g_idleTestMs = 0;  // banco de pruebas: tiempo sin uso en ms
+
 static void StartAsk(Action action, const std::wstring& text, const std::wstring& question) {
     AbortRequest();
     auto* job = new AskJob;
@@ -1317,9 +1514,10 @@ static void StartAsk(Action action, const std::wstring& text, const std::wstring
     job->question = question;
     uint64_t gen = job->gen;
     UpdateAnswer([gen](AnswerState& a) {
-        std::wstring label = a.label;
+        std::wstring label = a.label, prep = a.prep;
         a = AnswerState{};
         a.label = label;
+        a.prep = prep;
         a.waiting = true;
         a.gen = gen;
     });
@@ -1610,34 +1808,9 @@ static inline float RoundRectSdf(float px, float py, float cx, float cy, float h
     return std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.0f) - r;
 }
 
-// Rectángulo redondeado opaco con antialias sobre un fondo liso conocido
-// (la ventanita es opaca: se mezcla el color directo).
-static void FillRoundSolid(HDC dc, const RECT& rc, float r, COLORREF fill, COLORREF bg, COLORREF border = CLR_INVALID) {
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
-    Canvas cv(w, h);
-    if (!cv.bits) return;
-    float cx = w / 2.0f, cy = h / 2.0f;
-    r = std::min(r, std::min(cx, cy));
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            float d = RoundRectSdf(x + 0.5f, y + 0.5f, cx, cy, cx, cy, r);
-            float inside = std::clamp(0.5f - d, 0.0f, 1.0f);
-            COLORREF c = Mix(bg, fill, inside);
-            if (border != CLR_INVALID) {
-                float edge = std::clamp(1.0f - std::fabs(d + 0.5f), 0.0f, 1.0f);
-                c = Mix(c, border, edge);
-            }
-            cv.bits[(size_t)y * w + x] = 0xFF000000u | (GetRValue(c) << 16) | (GetGValue(c) << 8) | GetBValue(c);
-        }
-    }
-    GdiFlush();
-    BitBlt(dc, rc.left, rc.top, w, h, cv.dc, 0, 0, SRCCOPY);
-}
-
-static HFONT MakeFont(float px, int weight) {
+static HFONT MakeFont(float px, int weight, DWORD quality = CLEARTYPE_QUALITY) {
     for (const wchar_t* face : {L"Segoe UI Variable Text", L"Segoe UI"}) {
-        HFONT f = CreateFontW(-(int)std::lround(px), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
+        HFONT f = CreateFontW(-(int)std::lround(px), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, 0, 0, quality,
                               0, face);
         if (f) return f;
     }
@@ -1652,6 +1825,14 @@ static HWND g_host = nullptr;  // ventana de mensajes del hilo de la interfaz
 static HWND g_pill = nullptr;
 static POINT g_pillPt{};
 static HWND g_pillOwner = nullptr;
+// Su animación: aparece subiendo un poco y desvaneciéndose.
+static std::unique_ptr<Canvas> g_pillCanvas;
+static POINT g_pillDst{};
+static float g_pillT = 0;
+static bool g_pillWanted = false;
+
+static void Animate();
+static bool AnimationsOn();
 
 static float ScaleAt(POINT pt) {
     UINT dpi = 96;
@@ -1664,8 +1845,15 @@ static float ScaleAt(POINT pt) {
 }
 
 static void HidePill() {
-    if (g_pill && IsWindowVisible(g_pill)) ShowWindow(g_pill, SW_HIDE);
     if (g_host) KillTimer(g_host, TIMER_PILL_HIDE);
+    g_pillWanted = false;
+    if (!g_pill || !IsWindowVisible(g_pill)) return;
+    if (AnimationsOn() && g_pillCanvas) {
+        Animate();
+    } else {
+        ShowWindow(g_pill, SW_HIDE);
+        g_pillCanvas.reset();
+    }
 }
 
 // Pastilla "Preguntar" con bordes suaves, sombra y transparencia por
@@ -1752,11 +1940,17 @@ static void ShowPill(POINT pt, HWND owner) {
     int x = pt.x + (int)std::lround(8 * s) - margin, y = pt.y + (int)std::lround(14 * s) - margin;
     if (x + W > mi.rcWork.right) x = mi.rcWork.right - W;
     if (y + H > mi.rcWork.bottom) y = pt.y - (int)std::lround(14 * s) - H + margin;
-    POINT dst{x, y}, src{0, 0};
+    bool anim = AnimationsOn();
+    g_pillDst = POINT{x, y};
+    g_pillT = anim ? 0.0f : 1.0f;
+    g_pillWanted = true;
+    POINT dst{x, y + (anim ? (int)std::lround(5 * s) : 0)}, src{0, 0};
     SIZE size{W, H};
-    BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)(anim ? 0 : 255), AC_SRC_ALPHA};
     UpdateLayeredWindow(g_pill, nullptr, &dst, &size, cv->dc, &src, 0, &bf, ULW_ALPHA);
     SetWindowPos(g_pill, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    g_pillCanvas = std::move(cv);
+    if (anim) Animate();
     g_pillPt = pt;
     g_pillOwner = owner;
     SetTimer(g_host, TIMER_PILL_HIDE, 4000, nullptr);
@@ -1786,6 +1980,194 @@ static LRESULT CALLBACK PillWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 // ---------------------------------------------------------------------------
+// Animaciones: se dibujan a la frecuencia de la pantalla y como mínimo a 120
+// cuadros por segundo (con un temporizador de alta resolución). Sin nada
+// que animar, el hilo de la interfaz duerme hasta el próximo mensaje.
+// ---------------------------------------------------------------------------
+
+static bool g_animating = false;  // pide cuadros al bucle del hilo de la interfaz
+static double g_lastFrame = 0;
+static std::atomic<uint64_t> g_frameCount{0};
+
+static double NowMs() {
+    static LARGE_INTEGER freq{};
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart * 1000.0 / freq.QuadPart;
+}
+
+static double g_nextFrame = 0;  // cuándo toca el próximo cuadro
+
+static void Animate() {
+    if (!g_animating) g_lastFrame = g_nextFrame = NowMs();
+    g_animating = true;
+}
+
+// Con "Mostrar animaciones" apagado en Windows, todo cambia al instante.
+static bool AnimationsOn() {
+    BOOL on = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0);
+    return on != FALSE;
+}
+
+// Se acerca a 'to' con suavidad (exponencial, igual a cualquier frecuencia).
+// Devuelve true mientras sigue en movimiento.
+static bool Approach(float& v, float to, double dtMs, double tauMs, float eps = 0.004f) {
+    if (v == to) return false;
+    v += (to - v) * (float)(1.0 - std::exp(-dtMs / tauMs));
+    if (std::fabs(to - v) < eps) v = to;
+    return v != to;
+}
+
+static float EaseOutCubic(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    float u = 1 - t;
+    return 1 - u * u * u;
+}
+
+// ---------------------------------------------------------------------------
+// Dibujo con transparencia por píxel (ARGB premultiplicado), para el cristal
+// ---------------------------------------------------------------------------
+
+struct RectF {
+    float l, t, r, b;
+};
+
+static RectF ToF(const RECT& r) { return RectF{(float)r.left, (float)r.top, (float)r.right, (float)r.bottom}; }
+
+// Mezcla un color (con su opacidad 0..1) sobre un píxel premultiplicado.
+static inline void BlendPx(uint32_t& d, COLORREF c, float a) {
+    if (a <= 0.0f) return;
+    a = std::min(a, 1.0f);
+    float ia = 1 - a;
+    float dA = (float)(d >> 24), dR = (float)((d >> 16) & 0xFF), dG = (float)((d >> 8) & 0xFF), dB = (float)(d & 0xFF);
+    uint32_t A = (uint32_t)(255 * a + dA * ia + 0.5f);
+    uint32_t R = (uint32_t)(GetRValue(c) * a + dR * ia + 0.5f);
+    uint32_t G = (uint32_t)(GetGValue(c) * a + dG * ia + 0.5f);
+    uint32_t B = (uint32_t)(GetBValue(c) * a + dB * ia + 0.5f);
+    d = (std::min(A, 255u) << 24) | (std::min(R, 255u) << 16) | (std::min(G, 255u) << 8) | std::min(B, 255u);
+}
+
+// Rectángulo redondeado con antialias. rim = brillo del borde, más fuerte
+// arriba que abajo (como el reflejo de un cristal); rimTop/rimBottom, su
+// opacidad arriba y abajo.
+static void FillRoundA(Canvas& cv, RectF rc, float r, COLORREF fill, float alpha, COLORREF rim = CLR_INVALID,
+                       float rimTop = 0, float rimBottom = 0) {
+    float hw = (rc.r - rc.l) / 2, hh = (rc.b - rc.t) / 2;
+    if (hw <= 0 || hh <= 0 || !cv.bits) return;
+    r = std::min(r, std::min(hw, hh));
+    float cx = rc.l + hw, cy = rc.t + hh;
+    int x0 = std::max(0, (int)std::floor(rc.l)), x1 = std::min(cv.w, (int)std::ceil(rc.r));
+    int y0 = std::max(0, (int)std::floor(rc.t)), y1 = std::min(cv.h, (int)std::ceil(rc.b));
+    for (int y = y0; y < y1; y++) {
+        float py = y + 0.5f;
+        float vt = (py - rc.t) / (rc.b - rc.t);
+        float rimA = rimTop + (rimBottom - rimTop) * vt;
+        uint32_t* row = cv.bits + (size_t)y * cv.w;
+        for (int x = x0; x < x1; x++) {
+            float d = RoundRectSdf(x + 0.5f, py, cx, cy, hw, hh, r);
+            float cov = std::clamp(0.5f - d, 0.0f, 1.0f);
+            if (cov <= 0) continue;
+            BlendPx(row[x], fill, alpha * cov);
+            if (rim != CLR_INVALID && rimA > 0) {
+                float edge = std::clamp(1.0f - std::fabs(d + 0.6f), 0.0f, 1.0f);
+                BlendPx(row[x], rim, rimA * edge * cov);
+            }
+        }
+    }
+}
+
+// Círculo con antialias.
+static void FillCircleA(Canvas& cv, float cx, float cy, float rad, COLORREF c, float a) {
+    FillRoundA(cv, RectF{cx - rad, cy - rad, cx + rad, cy + rad}, rad, c, a);
+}
+
+// Línea con puntas redondas (para la ×).
+static void LineA(Canvas& cv, float ax, float ay, float bx, float by, float width, COLORREF c, float a) {
+    float hw = width / 2;
+    int x0 = std::max(0, (int)std::floor(std::min(ax, bx) - hw - 1)), x1 = std::min(cv.w, (int)std::ceil(std::max(ax, bx) + hw + 1));
+    int y0 = std::max(0, (int)std::floor(std::min(ay, by) - hw - 1)), y1 = std::min(cv.h, (int)std::ceil(std::max(ay, by) + hw + 1));
+    float dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            float px = x + 0.5f - ax, py = y + 0.5f - ay;
+            float t = len2 > 0 ? std::clamp((px * dx + py * dy) / len2, 0.0f, 1.0f) : 0;
+            float ex = px - dx * t, ey = py - dy * t;
+            float d = std::sqrt(ex * ex + ey * ey) - hw;
+            float cov = std::clamp(0.5f - d, 0.0f, 1.0f);
+            if (cov > 0) BlendPx(cv.bits[(size_t)y * cv.w + x], c, a * cov);
+        }
+    }
+}
+
+// Texto sobre el lienzo transparente: GDI lo escribe en blanco sobre negro
+// en una máscara (tonos de gris = cuánto cubre cada píxel) y se mezcla con
+// su color. fade = alto del desvanecido en el borde de abajo de 'clip'.
+static void TextA(Canvas& cv, Canvas& mask, const std::wstring& t, RECT r, HFONT font, COLORREF c, float a, UINT flags,
+                  RECT clip, int fade = 0) {
+    if (t.empty() || !mask.bits) return;
+    RECT all{0, 0, cv.w, cv.h};
+    IntersectRect(&clip, &clip, &all);
+    if (IsRectEmpty(&clip)) return;
+    for (int y = clip.top; y < clip.bottom; y++) {
+        memset(mask.bits + (size_t)y * mask.w + clip.left, 0, (size_t)(clip.right - clip.left) * 4);
+    }
+    int saved = SaveDC(mask.dc);
+    IntersectClipRect(mask.dc, clip.left, clip.top, clip.right, clip.bottom);
+    HGDIOBJ of = SelectObject(mask.dc, font);
+    SetBkMode(mask.dc, TRANSPARENT);
+    SetTextColor(mask.dc, RGB(255, 255, 255));
+    DrawTextW(mask.dc, t.c_str(), (int)t.size(), &r, flags);
+    SelectObject(mask.dc, of);
+    RestoreDC(mask.dc, saved);
+    GdiFlush();
+    for (int y = clip.top; y < clip.bottom; y++) {
+        float f = fade > 0 ? std::clamp((clip.bottom - y - 0.5f) / fade, 0.0f, 1.0f) : 1.0f;
+        if (f <= 0) continue;
+        const uint32_t* m = mask.bits + (size_t)y * mask.w;
+        uint32_t* d = cv.bits + (size_t)y * cv.w;
+        for (int x = clip.left; x < clip.right; x++) {
+            uint32_t v = m[x] & 0xFFFFFF;
+            if (!v) continue;
+            // El promedio de los tres canales (por si la fuente usa ClearType).
+            float cov = (((v >> 16) & 0xFF) + ((v >> 8) & 0xFF) + (v & 0xFF)) / 765.0f;
+            BlendPx(d[x], c, a * cov * f);
+        }
+    }
+}
+
+static bool TransparencyOn() {
+    DWORD v = 1, size = sizeof(v);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                 L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &v, &size);
+    return v != 0;
+}
+
+// Desenfoque de lo que hay detrás (lo pone DWM) y transparencia por píxel.
+// Devuelve si el cristal quedó activo; si no, la ventanita se dibuja opaca.
+static bool ApplyGlass(HWND h, bool want) {
+    MARGINS m{-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(h, &m);  // que DWM respete el alfa de cada píxel
+    using SetWcaFn = BOOL(WINAPI*)(HWND, void*);
+    static auto fn = (SetWcaFn)(void*)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute");
+    struct Accent {
+        int state, flags;
+        DWORD color;
+        int animation;
+    };
+    struct Data {
+        int attribute;
+        void* data;
+        SIZE_T size;
+    };
+    bool on = want && TransparencyOn();
+    Accent accent{on ? 3 : 0, 0, 0, 0};  // 3 = desenfoque detrás (sin el ruido del acrílico)
+    Data d{19, &accent, sizeof(accent)};  // 19 = WCA_ACCENT_POLICY
+    return fn && fn(h, &d) && on;
+}
+
+// ---------------------------------------------------------------------------
 // La ventanita
 // ---------------------------------------------------------------------------
 
@@ -1798,6 +2180,7 @@ struct Popup {
     bool hasAction = false;
     float s = 1;
     Colors c{};
+    bool glass = false;  // cristal activo (si no, opaca)
     HFONT font = nullptr, fontSmall = nullptr, fontBold = nullptr;
     int w = 0, h = 0;
     RECT quote{}, chips[kChips]{}, answer{}, input{}, footer{}, copy{}, close{};
@@ -1808,8 +2191,20 @@ struct Popup {
     std::wstring askKey;
     uint64_t askGen = 0;
     int scroll = 0, contentH = 0;
-    int dots = 0;
     bool copied = false;
+    // Animación.
+    int x = 0, y = 0;            // dónde va (sin el desplazamiento de la animación)
+    float openT = 1;             // 0 → 1 al aparecer
+    bool closing = false;        // desapareciendo
+    float closeT = 0;            // 0 → 1 al desaparecer
+    float answerH = 0;           // alto de la respuesta (se acerca a answerTarget)
+    int answerTarget = 0;
+    float hot[kChips + 2] = {};  // brillo de cada botón bajo el mouse
+    float on[kChips] = {};       // el botón elegido
+    float typingT = 0;           // la caja con el cursor
+    double phase = 0;            // los puntos de "pensando"
+    bool dirty = true;
+    std::unique_ptr<Canvas> frame, shown;
 };
 
 static Popup g_pop;
@@ -1820,6 +2215,8 @@ static void FreePopupGdi() {
         *f = nullptr;
     }
 }
+
+static bool PopupShown() { return g_pop.wnd && IsWindowVisible(g_pop.wnd) && !g_pop.closing; }
 
 // Mientras se escribe en la caja, el teclado lo lee el mod (con su gancho)
 // sin activar la ventanita: la app en uso sigue en primer plano. Solo lo
@@ -1837,7 +2234,8 @@ static int TextHeight(HFONT font, const std::wstring& t, int width) {
     return r.bottom - r.top;
 }
 
-// Lo que se ve en la zona de la respuesta (y si es un error).
+// Lo que se ve en la zona de la respuesta (y si es un error o un aviso de
+// lo que está haciendo, que lleva los puntos animados).
 static std::wstring AnswerText(const AnswerState& a, bool& isError, bool& isStatus) {
     isError = !a.error.empty();
     isStatus = false;
@@ -1846,18 +2244,17 @@ static std::wstring AnswerText(const AnswerState& a, bool& isError, bool& isStat
     if (isError) return t.empty() ? a.error : t + L"\n\n" + a.error;
     if (t.empty() && !a.done) {
         isStatus = true;
-        static const wchar_t* kDots[] = {L"", L".", L"..", L"..."};
-        std::wstring what = thinking ? L"Pensando" : !a.status.empty() ? a.status : a.waiting ? L"Preguntando al modelo" : L"";
-        return what + kDots[g_pop.dots % 4];
+        return thinking ? L"Pensando" : !a.prep.empty() && a.waiting ? a.prep : !a.status.empty() ? a.status
+               : a.waiting ? L"Preguntando al modelo" : L"";
     }
-    if (t.empty()) {
-        isStatus = true;
-        return L"Elige qué hacer con el texto o escribe una pregunta.";
-    }
+    if (t.empty()) return L"Elige qué hacer con el texto o escribe una pregunta.";
     return t;
 }
 
-// Acomoda todo según el largo de la respuesta (la ventanita crece hasta un tope).
+static bool IsHint(const AnswerState& a) { return a.done && a.error.empty() && a.raw.empty(); }
+
+// Acomoda todo. El alto de la respuesta es el animado (g_pop.answerH); el
+// que le corresponde queda en answerTarget.
 static void LayoutPopup() {
     float s = g_pop.s;
     auto S = [&](double v) { return (int)std::lround(v * s); };
@@ -1891,8 +2288,10 @@ static void LayoutPopup() {
     std::wstring t = AnswerText(CurrentAnswer(), err, status);
     int textW = W - 2 * pad;
     g_pop.contentH = std::max(S(22), TextHeight(g_pop.font, t, textW));
-    int answerH = std::min(g_pop.contentH, S(300));
-    g_pop.scroll = std::clamp(g_pop.scroll, 0, std::max(0, g_pop.contentH - answerH));
+    g_pop.answerTarget = std::min(g_pop.contentH, S(300));
+    if (g_pop.answerH <= 0) g_pop.answerH = (float)g_pop.answerTarget;
+    int answerH = (int)std::lround(g_pop.answerH);
+    g_pop.scroll = std::clamp(g_pop.scroll, 0, std::max(0, g_pop.contentH - g_pop.answerTarget));
     g_pop.answer = RECT{pad, y, W - pad, y + answerH};
     y += answerH + S(14);
     g_pop.input = RECT{pad, y, W - pad, y + S(34)};
@@ -1904,136 +2303,357 @@ static void LayoutPopup() {
     g_pop.h = y;
 }
 
-static void PaintPopup(HDC dc) {
+// Colores del cristal (o de la versión opaca).
+struct Ink {
+    COLORREF c;
+    float a;
+};
+
+struct Palette {
+    Ink bg, chip, chipHot, chipOn, input, closeHot;
+    COLORREF text, dim, rim, sheen;
+    float rimTop, rimBottom, sheenA, chipRimTop, chipRimBottom;
+};
+
+static Palette MakePalette(const Colors& c, bool glass) {
+    COLORREF white = RGB(255, 255, 255), black = RGB(0, 0, 0);
+    Palette p;
+    p.text = c.text;
+    p.rim = white;
+    p.sheen = white;
+    if (!glass) {
+        p.bg = {c.bg, 1};
+        p.chip = {c.chip, 1};
+        p.chipHot = {c.chipHot, 1};
+        p.chipOn = {c.chipOn, 1};
+        p.input = {c.input, 1};
+        p.closeHot = {c.chipHot, 1};
+        p.dim = c.dim;
+        p.rimTop = p.rimBottom = p.sheenA = 0;
+        p.chipRimTop = p.chipRimBottom = 0;
+        return p;
+    }
+    // Cristal: un velo translúcido sobre el desenfoque, un reflejo arriba y
+    // un borde brillante, más fuerte arriba (la luz viene de arriba).
+    if (c.dark) {
+        p.bg = {RGB(30, 30, 36), 0.56f};
+        p.chip = {white, 0.08f};
+        p.chipHot = {white, 0.10f};
+        p.chipOn = {white, 0.16f};
+        p.input = {black, 0.22f};
+        p.closeHot = {white, 0.14f};
+        p.dim = RGB(176, 176, 184);
+        p.rimTop = 0.34f;
+        p.rimBottom = 0.08f;
+        p.sheenA = 0.10f;
+        p.chipRimTop = 0.22f;
+        p.chipRimBottom = 0.04f;
+    } else {
+        p.bg = {RGB(244, 244, 248), 0.60f};
+        p.chip = {white, 0.50f};
+        p.chipHot = {white, 0.35f};
+        p.chipOn = {black, 0.09f};
+        p.input = {white, 0.62f};
+        p.closeHot = {black, 0.07f};
+        p.dim = RGB(92, 92, 100);
+        p.rimTop = 0.85f;
+        p.rimBottom = 0.25f;
+        p.sheenA = 0.30f;
+        p.chipRimTop = 0.9f;
+        p.chipRimBottom = 0.3f;
+    }
+    return p;
+}
+
+// ¿Hay puntos de "pensando" (o de preparar el servicio) moviéndose?
+static bool IndicatorActive(const AnswerState& a) {
+    bool err, status;
+    AnswerText(a, err, status);
+    return (status && !a.done) || !a.prep.empty();
+}
+
+// Los tres puntos que laten, después del texto 'what' escrito en 'r'.
+static void DrawIndicator(Canvas& cv, HFONT font, const std::wstring& what, RECT r, COLORREF c) {
+    float s = g_pop.s;
+    SIZE ts{};
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ o = SelectObject(dc, font);
+    GetTextExtentPoint32W(dc, what.c_str(), (int)what.size(), &ts);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, o);
+    DeleteDC(dc);
+    float x = r.left + ts.cx + 6 * s, y = r.top + tm.tmAscent - 2.6f * s;
+    if (what.empty()) x = (float)r.left + 3 * s;
+    for (int i = 0; i < 3; i++) {
+        float k = 0.5f + 0.5f * (float)std::sin(g_pop.phase / 1000.0 * 2 * 3.14159265 * 1.1 - i * 0.7);
+        FillCircleA(cv, x + i * 7 * s, y - k * 1.5f * s, (1.6f + 0.6f * k) * s, c, 0.35f + 0.65f * k);
+    }
+}
+
+// Dibuja la ventanita entera (sin los puntos animados ni el desvanecido de
+// la apertura, que se agregan en cada cuadro).
+static void RenderPopup(Canvas& cv) {
+    if (!cv.bits) return;
     const Colors& c = g_pop.c;
     float s = g_pop.s;
-    RECT all{0, 0, g_pop.w, g_pop.h};
-    HBRUSH bg = CreateSolidBrush(c.bg);
-    FillRect(dc, &all, bg);
-    DeleteObject(bg);
-    SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ of = SelectObject(dc, g_pop.fontSmall);
+    Palette p = MakePalette(c, g_pop.glass);
+    Canvas mask(cv.w, cv.h);
+    memset(cv.bits, 0, (size_t)cv.w * cv.h * 4);
+    // Fondo: velo, reflejo arriba y borde brillante (las esquinas las
+    // redondea DWM; el borde sigue su curva).
+    RectF all{0, 0, (float)cv.w, (float)cv.h};
+    float corner = 8 * s;
+    {
+        uint32_t A = (uint32_t)std::lround(p.bg.a * 255);
+        uint32_t v = (A << 24) | ((uint32_t)std::lround(GetRValue(p.bg.c) * p.bg.a) << 16) |
+                     ((uint32_t)std::lround(GetGValue(p.bg.c) * p.bg.a) << 8) |
+                     (uint32_t)std::lround(GetBValue(p.bg.c) * p.bg.a);
+        std::fill(cv.bits, cv.bits + (size_t)cv.w * cv.h, v);
+    }
+    if (p.sheenA > 0) {
+        int sh = (int)(cv.h * 0.42f);
+        for (int y = 0; y < std::min(sh, cv.h); y++) {
+            float k = 1 - (float)y / sh;
+            float a = p.sheenA * k * k;
+            uint32_t* row = cv.bits + (size_t)y * cv.w;
+            for (int x = 0; x < cv.w; x++) BlendPx(row[x], p.sheen, a);
+        }
+        FillRoundA(cv, all, corner, p.bg.c, 0, p.rim, p.rimTop, p.rimBottom);
+    }
     // Lo seleccionado, entre comillas y en una línea.
     std::wstring q = g_pop.text;
     std::replace(q.begin(), q.end(), L'\n', L' ');
     std::replace(q.begin(), q.end(), L'\r', L' ');
     q = L"«" + q + L"»";
-    SetTextColor(dc, c.dim);
-    RECT qr = g_pop.quote;
-    DrawTextW(dc, q.c_str(), (int)q.size(), &qr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    TextA(cv, mask, q, g_pop.quote, g_pop.fontSmall, p.dim, 1,
+          DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX, g_pop.quote);
     // Cerrar (×).
     {
         const RECT& r = g_pop.close;
-        if (g_pop.hotChip == kChips + 1) FillRoundSolid(dc, r, (r.right - r.left) / 2.0f, c.chipHot, c.bg);
-        HPEN pen = CreatePen(PS_SOLID, std::max(1, (int)std::lround(1.4 * s)), c.dim);
-        HGDIOBJ op = SelectObject(dc, pen);
-        int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2, k = (int)std::lround(4.5 * s);
-        MoveToEx(dc, cx - k, cy - k, nullptr);
-        LineTo(dc, cx + k + 1, cy + k + 1);
-        MoveToEx(dc, cx - k, cy + k, nullptr);
-        LineTo(dc, cx + k + 1, cy - k - 1);
-        SelectObject(dc, op);
-        DeleteObject(pen);
+        float hk = g_pop.hot[kChips + 1];
+        if (hk > 0) FillRoundA(cv, ToF(r), (r.right - r.left) / 2.0f, p.closeHot.c, p.closeHot.a * hk);
+        float cx = (r.left + r.right) / 2.0f, cy = (r.top + r.bottom) / 2.0f, k = 4.5f * s, lw = 1.4f * s;
+        LineA(cv, cx - k, cy - k, cx + k, cy + k, lw, p.dim, 1);
+        LineA(cv, cx - k, cy + k, cx + k, cy - k, lw, p.dim, 1);
     }
     // Botones de las acciones (gris claro; el elegido, un poco más oscuro).
-    SelectObject(dc, g_pop.font);
     for (int i = 0; i < kChips; i++) {
-        bool on = g_pop.hasAction && (int)g_pop.action == i;
-        COLORREF fill = on ? c.chipOn : g_pop.hotChip == i ? c.chipHot : c.chip;
         const RECT& r = g_pop.chips[i];
-        FillRoundSolid(dc, r, (r.bottom - r.top) / 2.0f, fill, c.bg);
-        SetTextColor(dc, c.text);
-        RECT tr = r;
-        DrawTextW(dc, kActionNames[i], -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+        float rad = (r.bottom - r.top) / 2.0f;
+        FillRoundA(cv, ToF(r), rad, p.chip.c, p.chip.a, p.rim, p.chipRimTop, p.chipRimBottom);
+        if (g_pop.hot[i] > 0) FillRoundA(cv, ToF(r), rad, p.chipHot.c, p.chipHot.a * g_pop.hot[i]);
+        if (g_pop.on[i] > 0) FillRoundA(cv, ToF(r), rad, p.chipOn.c, p.chipOn.a * g_pop.on[i]);
+        TextA(cv, mask, kActionNames[i], r, g_pop.font, p.text, 1, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX, r);
     }
-    // La respuesta.
+    // La respuesta (con un desvanecido abajo si hay más).
     bool err, status;
     AnswerState a = CurrentAnswer();
     std::wstring t = AnswerText(a, err, status);
-    SetTextColor(dc, err ? c.error : status ? c.dim : c.text);
     {
-        int saved = SaveDC(dc);
-        IntersectClipRect(dc, g_pop.answer.left, g_pop.answer.top, g_pop.answer.right, g_pop.answer.bottom);
         RECT tr = g_pop.answer;
         tr.top -= g_pop.scroll;
         tr.bottom = tr.top + g_pop.contentH + 4;
-        DrawTextW(dc, t.c_str(), (int)t.size(), &tr, DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
-        RestoreDC(dc, saved);
-        // Se nota que hay más abajo: un desvanecido en el borde.
-        if (g_pop.contentH > g_pop.answer.bottom - g_pop.answer.top + g_pop.scroll) {
-            int fh = (int)std::lround(14 * s);
-            // Cada fila del borde se acerca al color del fondo (el DC es de
-            // memoria: leer y escribir píxeles es barato).
-            for (int k = 0; k < fh; k++) {
-                int yy = g_pop.answer.bottom - fh + k;
-                for (int x = g_pop.answer.left; x < g_pop.answer.right; x++) {
-                    COLORREF p = GetPixel(dc, x, yy);
-                    if (p != CLR_INVALID) SetPixel(dc, x, yy, Mix(p, c.bg, (float)(k + 1) / fh));
-                }
-            }
-        }
+        bool more = g_pop.contentH > g_pop.answer.bottom - g_pop.answer.top + g_pop.scroll;
+        COLORREF col = err ? c.error : (status || IsHint(a)) ? p.dim : p.text;
+        TextA(cv, mask, t, tr, g_pop.font, col, 1, DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX, g_pop.answer,
+              more ? (int)std::lround(18 * s) : 0);
     }
     // Caja de la pregunta (dibujada aquí: no es un control de Windows, que
     // necesitaría el foco).
-    FillRoundSolid(dc, g_pop.input, 10 * s, c.input, c.bg, g_typing ? Mix(c.bg, c.text, 0.45f) : c.inputBorder);
     {
-        SelectObject(dc, g_pop.font);
+        float ty = g_pop.typingT;
+        COLORREF border = Mix(c.inputBorder, Mix(c.bg, c.text, 0.45f), ty);
+        FillRoundA(cv, ToF(g_pop.input), 10 * s, p.input.c, p.input.a);
+        FillRoundA(cv, ToF(g_pop.input), 10 * s, p.input.c, 0, border, g_pop.glass ? 0.55f + 0.45f * ty : 1,
+                   g_pop.glass ? 0.75f + 0.25f * ty : 1);
         int padX = (int)std::lround(12 * s), caretW = std::max(1, (int)std::lround(1.5 * s));
         RECT ir{g_pop.input.left + padX, g_pop.input.top, g_pop.input.right - padX, g_pop.input.bottom};
-        int saved = SaveDC(dc);
-        IntersectClipRect(dc, ir.left, ir.top, ir.right, ir.bottom);
         int caretX = ir.left;
         if (g_pop.query.empty()) {
-            SetTextColor(dc, c.dim);
             const wchar_t* cue = g_typing ? L"Escribe tu pregunta y pulsa Enter" : L"Pregunta algo sobre el texto…";
-            DrawTextW(dc, cue, -1, &ir, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+            TextA(cv, mask, cue, ir, g_pop.font, p.dim, 1, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS, ir);
         } else {
             SIZE ts{};
-            GetTextExtentPoint32W(dc, g_pop.query.c_str(), (int)g_pop.query.size(), &ts);
+            HGDIOBJ of = SelectObject(mask.dc, g_pop.font);
+            GetTextExtentPoint32W(mask.dc, g_pop.query.c_str(), (int)g_pop.query.size(), &ts);
+            SelectObject(mask.dc, of);
             // Si no cabe, se ve el final (donde se escribe).
             int x = ts.cx > ir.right - ir.left - 2 * caretW ? ir.right - 2 * caretW - ts.cx : ir.left;
-            SetTextColor(dc, c.text);
             RECT tr{x, ir.top, x + ts.cx + 4, ir.bottom};
-            DrawTextW(dc, g_pop.query.c_str(), (int)g_pop.query.size(), &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            TextA(cv, mask, g_pop.query, tr, g_pop.font, p.text, 1, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX, ir);
             caretX = x + ts.cx + 1;
         }
         if (g_typing && g_pop.caretOn) {
-            TEXTMETRICW tm{};
-            GetTextMetricsW(dc, &tm);
-            int cy = (ir.top + ir.bottom) / 2;
-            RECT caret{caretX, cy - tm.tmHeight / 2, caretX + caretW, cy + tm.tmHeight / 2};
-            HBRUSH cb = CreateSolidBrush(c.text);
-            FillRect(dc, &caret, cb);
-            DeleteObject(cb);
+            float ch = 16 * s, cy = (ir.top + ir.bottom) / 2.0f;
+            FillRoundA(cv, RectF{(float)caretX, cy - ch / 2, (float)(caretX + caretW), cy + ch / 2}, caretW / 2.0f, p.text, 1);
         }
-        RestoreDC(dc, saved);
     }
-    // Pie: servicio y modelo; Copiar.
-    SelectObject(dc, g_pop.fontSmall);
-    SetTextColor(dc, c.dim);
-    RECT fr = g_pop.footer;
-    std::wstring label = a.label.empty() ? L"" : a.label;
-    DrawTextW(dc, label.c_str(), (int)label.size(), &fr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    if (g_pop.hotChip == kChips) FillRoundSolid(dc, g_pop.copy, 8 * s, c.chipHot, c.bg);
-    SetTextColor(dc, (a.raw.empty() || status) ? c.dim : c.text);
-    RECT cr = g_pop.copy;
-    DrawTextW(dc, g_pop.copied ? L"Copiado" : L"Copiar", -1, &cr, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
-    SelectObject(dc, of);
+    // Pie: servicio y modelo (o lo que está preparando); Copiar.
+    {
+        std::wstring label = !a.prep.empty() ? a.prep : a.label;
+        TextA(cv, mask, label, g_pop.footer, g_pop.fontSmall, p.dim, 1,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX, g_pop.footer);
+        float hk = g_pop.hot[kChips];
+        if (hk > 0) FillRoundA(cv, ToF(g_pop.copy), 8 * s, p.closeHot.c, p.closeHot.a * hk);
+        bool can = !a.raw.empty() && !status;
+        TextA(cv, mask, g_pop.copied ? L"Copiado" : L"Copiar", g_pop.copy, g_pop.fontSmall, can ? p.text : p.dim, 1,
+              DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX, g_pop.copy);
+    }
 }
 
-static void ResizePopup() {
-    LayoutPopup();
+static void PlacePopupWindow();
+
+// Lleva el cuadro a la pantalla: lo redibuja si cambió algo y le agrega los
+// puntos animados y la opacidad de la apertura o el cierre.
+static void PresentPopup() {
+    if (!g_pop.wnd || !IsWindowVisible(g_pop.wnd)) return;
+    if (!g_pop.frame || g_pop.frame->w != g_pop.w || g_pop.frame->h != g_pop.h) {
+        g_pop.frame = std::make_unique<Canvas>(g_pop.w, g_pop.h);
+        g_pop.dirty = true;
+    }
+    if (g_pop.dirty) {
+        RenderPopup(*g_pop.frame);
+        g_pop.dirty = false;
+    }
+    Canvas* out = g_pop.frame.get();
+    AnswerState a = CurrentAnswer();
+    float opacity = g_pop.closing ? 1 - EaseOutCubic(g_pop.closeT) : EaseOutCubic(g_pop.openT);
+    bool ind = IndicatorActive(a);
+    if (ind || opacity < 1) {
+        if (!g_pop.shown || g_pop.shown->w != g_pop.w || g_pop.shown->h != g_pop.h) {
+            g_pop.shown = std::make_unique<Canvas>(g_pop.w, g_pop.h);
+        }
+        out = g_pop.shown.get();
+        if (!out->bits || !g_pop.frame->bits) return;
+        memcpy(out->bits, g_pop.frame->bits, (size_t)out->w * out->h * 4);
+        if (ind) {
+            Palette p = MakePalette(g_pop.c, g_pop.glass);
+            bool err, status;
+            std::wstring t = AnswerText(a, err, status);
+            if (status && !a.done) DrawIndicator(*out, g_pop.font, t, g_pop.answer, p.dim);
+            if (!a.prep.empty()) DrawIndicator(*out, g_pop.fontSmall, a.prep, g_pop.footer, p.dim);
+        }
+        if (opacity < 1) {
+            uint32_t k = (uint32_t)std::lround(std::clamp(opacity, 0.0f, 1.0f) * 256);
+            for (size_t i = 0, n = (size_t)out->w * out->h; i < n; i++) {
+                uint32_t v = out->bits[i];
+                out->bits[i] = ((((v >> 24) * k) >> 8) << 24) | (((((v >> 16) & 0xFF) * k) >> 8) << 16) |
+                               (((((v >> 8) & 0xFF) * k) >> 8) << 8) | (((v & 0xFF) * k) >> 8);
+            }
+        }
+        GdiFlush();
+    }
+    if (!out->bits) return;
+    if (!g_pop.glass && opacity >= 1) {
+        // Opaca: sin alfa (por si DWM no lo respeta).
+        for (size_t i = 0, n = (size_t)out->w * out->h; i < n; i++) out->bits[i] |= 0xFF000000u;
+    }
+    HDC dc = GetDC(g_pop.wnd);
+    BitBlt(dc, 0, 0, out->w, out->h, out->dc, 0, 0, SRCCOPY);
+    ReleaseDC(g_pop.wnd, dc);
+}
+
+// Algo cambió: se redibuja ahora (o en el próximo cuadro, si está animando).
+static void RedrawPopup() {
+    g_pop.dirty = true;
+    if (!g_animating) PresentPopup();
+}
+
+// Mueve y ajusta la ventana: el alto animado y el desplazamiento de la
+// apertura o el cierre.
+static void PlacePopupWindow() {
+    if (!g_pop.wnd) return;
+    float s = g_pop.s;
+    float off = g_pop.closing ? 6 * s * EaseOutCubic(g_pop.closeT) : 10 * s * (1 - EaseOutCubic(g_pop.openT));
+    MONITORINFO mi{sizeof(mi)};
+    GetMonitorInfoW(MonitorFromWindow(g_pop.wnd, MONITOR_DEFAULTTONEAREST), &mi);
+    // Si crece y ya no cabe abajo, sube.
+    int y = std::max<int>(mi.rcWork.top, std::min<int>(g_pop.y, mi.rcWork.bottom - g_pop.h));
     RECT r;
     GetWindowRect(g_pop.wnd, &r);
-    if (r.right - r.left != g_pop.w || r.bottom - r.top != g_pop.h) {
-        // Si crece y ya no cabe abajo, sube.
-        MONITORINFO mi{sizeof(mi)};
-        GetMonitorInfoW(MonitorFromWindow(g_pop.wnd, MONITOR_DEFAULTTONEAREST), &mi);
-        int y = std::min<int>(r.top, mi.rcWork.bottom - g_pop.h);
-        SetWindowPos(g_pop.wnd, nullptr, r.left, std::max<int>(y, mi.rcWork.top), g_pop.w, g_pop.h,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+    int ny = y + (int)std::lround(off);
+    if (r.left != g_pop.x || r.top != ny || r.right - r.left != g_pop.w || r.bottom - r.top != g_pop.h) {
+        SetWindowPos(g_pop.wnd, nullptr, g_pop.x, ny, g_pop.w, g_pop.h,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS);
     }
-    InvalidateRect(g_pop.wnd, nullptr, FALSE);
+}
+
+// Un cuadro de la animación. Devuelve true si hacen falta más.
+static bool AnimatePopup(double dt) {
+    if (!g_pop.wnd || !IsWindowVisible(g_pop.wnd)) return false;
+    bool more = false, relayout = false;
+    if (g_pop.closing) {
+        g_pop.closeT = std::min(1.0f, g_pop.closeT + (float)(dt / 150));
+        if (g_pop.closeT >= 1) {
+            g_pop.closing = false;
+            ShowWindow(g_pop.wnd, SW_HIDE);
+            return false;
+        }
+        more = true;
+    } else if (g_pop.openT < 1) {
+        g_pop.openT = std::min(1.0f, g_pop.openT + (float)(dt / 230));
+        more = true;
+    }
+    if (Approach(g_pop.answerH, (float)g_pop.answerTarget, dt, 55, 0.4f)) more = true;
+    if (std::lround(g_pop.answerH) != g_pop.answer.bottom - g_pop.answer.top) relayout = true;
+    for (int i = 0; i < kChips + 2; i++) {
+        if (Approach(g_pop.hot[i], g_pop.hotChip == i ? 1.0f : 0.0f, dt, 45)) more = g_pop.dirty = true;
+    }
+    for (int i = 0; i < kChips; i++) {
+        bool sel = g_pop.hasAction && (int)g_pop.action == i;
+        if (Approach(g_pop.on[i], sel ? 1.0f : 0.0f, dt, 60)) more = g_pop.dirty = true;
+    }
+    if (Approach(g_pop.typingT, g_typing ? 1.0f : 0.0f, dt, 60)) more = g_pop.dirty = true;
+    if (IndicatorActive(CurrentAnswer())) {
+        g_pop.phase += dt;
+        more = true;
+    }
+    if (relayout) {
+        LayoutPopup();
+        g_pop.dirty = true;
+    }
+    PlacePopupWindow();
+    PresentPopup();
+    return more;
+}
+
+// Los valores animados saltan al final (sin animaciones en Windows).
+static void FinishPopupAnimations() {
+    g_pop.openT = 1;
+    g_pop.answerH = (float)g_pop.answerTarget;
+    for (int i = 0; i < kChips + 2; i++) g_pop.hot[i] = g_pop.hotChip == i ? 1.0f : 0.0f;
+    for (int i = 0; i < kChips; i++) g_pop.on[i] = g_pop.hasAction && (int)g_pop.action == i ? 1.0f : 0.0f;
+    g_pop.typingT = g_typing ? 1.0f : 0.0f;
+}
+
+// Llegó texto o cambió el estado: nuevo tamaño (animado) y nuevo dibujo.
+static void ResizePopup() {
+    if (!g_pop.wnd) return;
+    LayoutPopup();
+    g_pop.dirty = true;
+    if (!AnimationsOn()) {
+        FinishPopupAnimations();
+        LayoutPopup();
+        PlacePopupWindow();
+        PresentPopup();
+        return;
+    }
+    Animate();
+}
+
+// La ventanita deja de existir hasta la próxima vez (reposo).
+static void ReleasePopup() {
+    if (g_pop.wnd) {
+        g_popup = nullptr;
+        DestroyWindow(g_pop.wnd);
+        g_pop.wnd = nullptr;
+    }
+    FreePopupGdi();
+    g_pop.frame.reset();
+    g_pop.shown.reset();
+    g_pop.saved.clear();
+    g_pop.saved.shrink_to_fit();
 }
 
 static void RunAction(Action a, const std::wstring& question = L"") {
@@ -2044,7 +2664,6 @@ static void RunAction(Action a, const std::wstring& question = L"") {
     g_pop.hasAction = a != Action::Question;
     g_pop.scroll = 0;
     g_pop.copied = false;
-    g_pop.dots = 0;
     g_pop.askKey = key;
     for (auto& [k, ans] : g_pop.saved) {
         if (k != key) continue;
@@ -2054,27 +2673,33 @@ static void RunAction(Action a, const std::wstring& question = L"") {
         g_pop.askGen = gen;
         AnswerState copy = ans;
         UpdateAnswer([&](AnswerState& s) {
+            copy.prep = s.prep;
             s = copy;
             s.gen = gen;
         });
-        KillTimer(g_pop.wnd, TIMER_DOTS);
         ResizePopup();
         return;
     }
     StartAsk(a, g_pop.text, question);
     g_pop.askGen = g_askGen.load();
-    SetTimer(g_pop.wnd, TIMER_DOTS, 350, nullptr);
     ResizePopup();
 }
 
 static void ClosePopup() {
-    if (!g_pop.wnd || !IsWindowVisible(g_pop.wnd)) return;
+    if (!g_pop.wnd || !IsWindowVisible(g_pop.wnd) || g_pop.closing) return;
     ++g_askGen;
     AbortRequest();
-    KillTimer(g_pop.wnd, TIMER_DOTS);
     KillTimer(g_pop.wnd, TIMER_CARET);
     g_typing = false;
-    ShowWindow(g_pop.wnd, SW_HIDE);  // nunca tuvo el foco: no hay que devolverlo
+    if (HWND h = g_hostWnd.load()) PostMessageW(h, WM_APP_USED, 0, 0);
+    // nunca tuvo el foco: no hay que devolverlo
+    if (!AnimationsOn()) {
+        ShowWindow(g_pop.wnd, SW_HIDE);
+        return;
+    }
+    g_pop.closing = true;
+    g_pop.closeT = 0;
+    Animate();
 }
 
 static void SetTyping(bool on) {
@@ -2083,7 +2708,8 @@ static void SetTyping(bool on) {
     g_pop.caretOn = true;
     if (on) SetTimer(g_pop.wnd, TIMER_CARET, 530, nullptr);
     else KillTimer(g_pop.wnd, TIMER_CARET);
-    InvalidateRect(g_pop.wnd, nullptr, FALSE);
+    g_pop.dirty = true;
+    Animate();
 }
 
 static void SubmitQuery() {
@@ -2111,8 +2737,9 @@ static void PasteIntoQuery() {
 
 static void CopyAnswer() {
     bool err, status;
-    std::wstring t = AnswerText(CurrentAnswer(), err, status);
-    if (t.empty() || status || err) return;
+    AnswerState a = CurrentAnswer();
+    std::wstring t = AnswerText(a, err, status);
+    if (t.empty() || status || err || IsHint(a)) return;
     if (!OpenClipboard(g_pop.wnd)) return;
     EmptyClipboard();
     HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (t.size() + 1) * sizeof(wchar_t));
@@ -2123,7 +2750,7 @@ static void CopyAnswer() {
     }
     CloseClipboard();
     g_pop.copied = true;
-    InvalidateRect(g_pop.wnd, nullptr, FALSE);
+    RedrawPopup();
 }
 
 static int PopupHit(POINT pt) {
@@ -2139,16 +2766,9 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
-            HDC dc = BeginPaint(hwnd, &ps);
-            HDC mem = CreateCompatibleDC(dc);
-            HBITMAP bmp = CreateCompatibleBitmap(dc, g_pop.w, g_pop.h);
-            HGDIOBJ old = SelectObject(mem, bmp);
-            PaintPopup(mem);
-            BitBlt(dc, 0, 0, g_pop.w, g_pop.h, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, old);
-            DeleteObject(bmp);
-            DeleteDC(mem);
+            BeginPaint(hwnd, &ps);
             EndPaint(hwnd, &ps);
+            PresentPopup();
             return 0;
         }
         case WM_ERASEBKGND:
@@ -2162,13 +2782,15 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 g_pop.hotChip = hot;
                 TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&tme);
-                InvalidateRect(hwnd, nullptr, FALSE);
+                if (AnimationsOn()) Animate();
+                else FinishPopupAnimations(), RedrawPopup();
             }
             return 0;
         }
         case WM_MOUSELEAVE:
             g_pop.hotChip = -1;
-            InvalidateRect(hwnd, nullptr, FALSE);
+            if (AnimationsOn()) Animate();
+            else FinishPopupAnimations(), RedrawPopup();
             return 0;
         case WM_SETCURSOR:
             if (LOWORD(lParam) == HTCLIENT) {
@@ -2194,21 +2816,18 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             int step = (int)std::lround(40 * g_pop.s);
             g_pop.scroll -= GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? step : -step;
             LayoutPopup();
-            InvalidateRect(hwnd, nullptr, FALSE);
+            RedrawPopup();
             return 0;
         }
         case WM_APP_ANSWER: {
             AnswerState a = CurrentAnswer();
-            if (a.done) {
-                KillTimer(hwnd, TIMER_DOTS);
-                // Se guarda si salió bien, para volver a ella sin preguntar.
-                if (a.gen == g_pop.askGen && a.error.empty() && !a.raw.empty() && !g_pop.askKey.empty()) {
-                    bool have = false;
-                    for (auto& [k, ans] : g_pop.saved) have = have || k == g_pop.askKey;
-                    if (!have) g_pop.saved.emplace_back(g_pop.askKey, a);
-                }
+            // Se guarda si salió bien, para volver a ella sin preguntar.
+            if (a.done && a.gen == g_pop.askGen && a.error.empty() && !a.raw.empty() && !g_pop.askKey.empty()) {
+                bool have = false;
+                for (auto& [k, ans] : g_pop.saved) have = have || k == g_pop.askKey;
+                if (!have) g_pop.saved.emplace_back(g_pop.askKey, a);
             }
-            ResizePopup();
+            if (IsWindowVisible(hwnd)) ResizePopup();
             return 0;
         }
         case WM_APP_SUBMIT:
@@ -2217,7 +2836,7 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         case WM_APP_CHAR:
             if (g_pop.query.size() < 1000) g_pop.query += (wchar_t)wParam;
             g_pop.caretOn = true;
-            InvalidateRect(hwnd, nullptr, FALSE);
+            RedrawPopup();
             return 0;
         case WM_APP_EDITKEY:
             switch (wParam) {
@@ -2243,15 +2862,12 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     break;
             }
             g_pop.caretOn = true;
-            InvalidateRect(hwnd, nullptr, FALSE);
+            RedrawPopup();
             return 0;
         case WM_TIMER:
-            if (wParam == TIMER_DOTS) {
-                g_pop.dots++;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            } else if (wParam == TIMER_CARET) {
+            if (wParam == TIMER_CARET) {
                 g_pop.caretOn = !g_pop.caretOn;
-                InvalidateRect(hwnd, nullptr, FALSE);
+                RedrawPopup();
             }
             return 0;
         case WM_CLOSE:
@@ -2267,9 +2883,9 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     FreePopupGdi();
     g_pop.s = ScaleAt(pt);
     g_pop.c = MakeColors(st.theme);
-    g_pop.font = MakeFont(14 * g_pop.s, FW_NORMAL);
-    g_pop.fontSmall = MakeFont(12.5f * g_pop.s, FW_NORMAL);
-    g_pop.fontBold = MakeFont(14 * g_pop.s, FW_SEMIBOLD);
+    g_pop.font = MakeFont(14 * g_pop.s, FW_NORMAL, ANTIALIASED_QUALITY);
+    g_pop.fontSmall = MakeFont(12.5f * g_pop.s, FW_NORMAL, ANTIALIASED_QUALITY);
+    g_pop.fontBold = MakeFont(14 * g_pop.s, FW_SEMIBOLD, ANTIALIASED_QUALITY);
     g_pop.text = sel;
     g_pop.query.clear();
     g_typing = false;
@@ -2280,13 +2896,25 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     g_pop.copied = false;
     g_pop.saved.clear();
     g_pop.askKey.clear();
+    g_pop.closing = false;
+    g_pop.openT = AnimationsOn() ? 0.0f : 1.0f;
+    g_pop.answerH = 0;
+    for (float& v : g_pop.hot) v = 0;
+    for (float& v : g_pop.on) v = 0;
+    g_pop.typingT = 0;
     ++g_askGen;
     AbortRequest();
+    // Sin consulta todavía: espera a que se elija qué hacer.
     UpdateAnswer([](AnswerState& a) {
-        std::wstring label = a.label;
+        std::wstring label = a.label, prep = a.prep;
         a = AnswerState{};
         a.label = label;
+        a.prep = prep;
+        a.done = true;
     });
+    // Mientras tanto, el servicio se prepara (arranca Foundry si hace falta y
+    // carga el modelo).
+    StartWarmup();
     if (!g_pop.wnd) {
         // Nunca se activa: ni al aparecer ni al tocarla.
         g_pop.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kPopupClass,
@@ -2297,6 +2925,7 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
         DWORD corner = kCornerRound;
         DwmSetWindowAttribute(g_pop.wnd, kDwmCornerPreference, &corner, sizeof(corner));
     }
+    g_pop.glass = ApplyGlass(g_pop.wnd, st.glass);
     BOOL dark = g_pop.c.dark;
     DwmSetWindowAttribute(g_pop.wnd, kDwmDarkMode, &dark, sizeof(dark));
     COLORREF border = Mix(g_pop.c.bg, g_pop.c.text, g_pop.c.dark ? 0.2f : 0.18f);
@@ -2305,10 +2934,15 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     LayoutPopup();
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
-    int x = std::clamp<int>(pt.x - g_pop.w / 4, mi.rcWork.left + 8, mi.rcWork.right - g_pop.w - 8);
-    int y = pt.y + (int)std::lround(18 * g_pop.s);
-    if (y + g_pop.h > mi.rcWork.bottom - 8) y = std::max<int>(mi.rcWork.top + 8, pt.y - g_pop.h - (int)std::lround(18 * g_pop.s));
-    SetWindowPos(g_pop.wnd, HWND_TOPMOST, x, y, g_pop.w, g_pop.h, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    g_pop.x = std::clamp<int>(pt.x - g_pop.w / 4, mi.rcWork.left + 8, mi.rcWork.right - g_pop.w - 8);
+    g_pop.y = pt.y + (int)std::lround(18 * g_pop.s);
+    if (g_pop.y + g_pop.h > mi.rcWork.bottom - 8) {
+        g_pop.y = std::max<int>(mi.rcWork.top + 8, pt.y - g_pop.h - (int)std::lround(18 * g_pop.s));
+    }
+    float off = 10 * g_pop.s * (1 - EaseOutCubic(g_pop.openT));
+    g_pop.dirty = true;
+    SetWindowPos(g_pop.wnd, HWND_TOPMOST, g_pop.x, g_pop.y + (int)std::lround(off), g_pop.w, g_pop.h,
+                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
     SetTimer(g_host, TIMER_TOP, 250, nullptr);
     DefaultAction da = st.defaultAction;
     if (da == DefaultAction::Auto) {
@@ -2319,7 +2953,29 @@ static void OpenPopup(const std::wstring& text, POINT pt, HWND owner) {
     if (da == DefaultAction::Define) RunAction(Action::Define);
     else if (da == DefaultAction::Explain) RunAction(Action::Explain);
     else if (da == DefaultAction::Answer) RunAction(Action::Answer);
-    InvalidateRect(g_pop.wnd, nullptr, FALSE);
+    PresentPopup();
+    Animate();
+}
+
+// Un cuadro del botón Preguntar (aparecer o desaparecer).
+static bool AnimatePill(double dt) {
+    if (!g_pill || !g_pillCanvas || !IsWindowVisible(g_pill)) return false;
+    float to = g_pillWanted ? 1.0f : 0.0f;
+    if (g_pillT == to) return false;
+    float step = (float)(dt / (g_pillWanted ? 170 : 110));
+    g_pillT = g_pillWanted ? std::min(1.0f, g_pillT + step) : std::max(0.0f, g_pillT - step);
+    if (!g_pillWanted && g_pillT <= 0) {
+        ShowWindow(g_pill, SW_HIDE);
+        g_pillCanvas.reset();
+        return false;
+    }
+    float e = EaseOutCubic(g_pillT);
+    float s = ScaleAt(g_pillPt);
+    POINT dst{g_pillDst.x, g_pillDst.y + (int)std::lround(5 * s * (1 - e))}, src{0, 0};
+    SIZE size{g_pillCanvas->w, g_pillCanvas->h};
+    BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)std::lround(255 * e), AC_SRC_ALPHA};
+    UpdateLayeredWindow(g_pill, nullptr, &dst, &size, g_pillCanvas->dc, &src, 0, &bf, ULW_ALPHA);
+    return g_pillT != to;
 }
 
 // ---------------------------------------------------------------------------
@@ -2405,8 +3061,6 @@ static bool IsPageContent(POINT pt) {
     if (h) GetClassNameW(h, cls, ARRAYSIZE(cls));
     return !wcscmp(cls, L"Chrome_RenderWidgetHostHWND") || !wcscmp(cls, L"MozillaWindowClass");
 }
-
-static bool PopupShown() { return g_pop.wnd && IsWindowVisible(g_pop.wnd); }
 
 static bool InPopup(POINT pt) {
     RECT r{};
@@ -2587,7 +3241,29 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             OpenPopup(r->text, r->pt, r->owner);
             return 0;
         }
+        case WM_APP_USED: {
+            // Vuelve a contar el tiempo sin uso desde ahora.
+            Settings st = CurrentSettings();
+            if (st.idleMinutes > 0 && g_foundryUsed) {
+                SetTimer(hwnd, TIMER_IDLE, g_idleTestMs ? g_idleTestMs : (UINT)st.idleMinutes * 60000u, nullptr);
+            }
+            return 0;
+        }
         case WM_TIMER:
+            if (wParam == TIMER_IDLE) {
+                KillTimer(hwnd, TIMER_IDLE);
+                if (PopupShown() || g_warming) {
+                    PostMessageW(hwnd, WM_APP_USED, 0, 0);  // está en uso: después
+                    return 0;
+                }
+                // Reposo: sin ventanita ni servicio hasta la próxima vez.
+                ReleasePopup();
+                if (g_foundryUsed.exchange(false) && CurrentSettings().provider == Provider::Foundry) {
+                    HANDLE t = CreateThread(nullptr, 0, SleepThread, nullptr, 0, nullptr);
+                    if (t) CloseHandle(t);
+                }
+                return 0;
+            }
             if (wParam == TIMER_PILL_ASK) {
                 KillTimer(hwnd, TIMER_PILL_ASK);
                 if (AppAllowed(GetForegroundWindow()) &&
@@ -2650,6 +3326,7 @@ static DWORD WINAPI UiThread(LPVOID) {
     RegisterClassExW(&wc);
 
     g_host = CreateWindowExW(0, kHostClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
+    g_hostWnd = g_host;
     g_pill = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, kPillClass, L"",
                              WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, inst, nullptr);
     HMODULE mod = ThisModule();
@@ -2657,20 +3334,67 @@ static DWORD WINAPI UiThread(LPVOID) {
     g_keyHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyHook, mod, 0);
     Wh_Log(L"Consulta rápida lista (ganchos: %s)", g_mouseHook && g_keyHook ? L"sí" : L"no");
 
-    MSG m;
-    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
-        TranslateMessage(&m);
-        DispatchMessageW(&m);
+    // Bucle de mensajes. Mientras hay algo animándose, un cuadro cada
+    // 1/120 s (o a la frecuencia de la pantalla, si es mayor), con un
+    // temporizador de alta resolución; si no, espera sin gastar nada.
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* alta resolución */, TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    bool quit = false;
+    while (!quit) {
+        MSG m;
+        if (!g_animating) {
+            if (GetMessageW(&m, nullptr, 0, 0) <= 0) break;
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+            continue;
+        }
+        while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+            if (m.message == WM_QUIT) {
+                quit = true;
+                break;
+            }
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        if (quit || !g_animating) continue;
+        double now = NowMs(), dt = std::min(now - g_lastFrame, 50.0);
+        g_lastFrame = now;
+        g_frameCount++;
+        bool a = AnimatePopup(dt);
+        bool b = AnimatePill(dt);
+        g_animating = a || b;
+        if (!g_animating) continue;
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        double hz = EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) ? dm.dmDisplayFrequency : 60;
+        double period = 1000.0 / std::max(120.0, std::min(hz, 500.0));
+        // Plazos fijos (no "esperar un período"): si un cuadro se atrasa, el
+        // siguiente lo compensa y el promedio queda justo.
+        g_nextFrame += period;
+        double wait = g_nextFrame - NowMs();
+        if (wait < -period) {
+            g_nextFrame = NowMs() + period;
+            wait = period;
+        }
+        wait = std::max(0.3, wait);
+        LARGE_INTEGER due;
+        due.QuadPart = -(LONGLONG)(wait * 10000);
+        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            MsgWaitForMultipleObjects(1, &timer, FALSE, 50, QS_ALLINPUT);
+        } else {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, (DWORD)std::ceil(wait), QS_ALLINPUT);
+        }
     }
+    if (timer) CloseHandle(timer);
+    g_animating = false;
 
     if (g_mouseHook) UnhookWindowsHookEx(g_mouseHook);
     if (g_keyHook) UnhookWindowsHookEx(g_keyHook);
     g_mouseHook = g_keyHook = nullptr;
-    g_popup = nullptr;
-    if (g_pop.wnd) DestroyWindow(g_pop.wnd);
-    g_pop.wnd = nullptr;
-    FreePopupGdi();
+    ReleasePopup();
+    g_pillCanvas.reset();
     if (g_pill) DestroyWindow(g_pill);
+    g_hostWnd = nullptr;
     if (g_host) DestroyWindow(g_host);
     g_pill = g_host = nullptr;
     for (const wchar_t* c : {kHostClass, kClipClass, kPillClass, kPopupClass}) UnregisterClassW(c, inst);

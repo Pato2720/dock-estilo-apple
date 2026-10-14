@@ -6,21 +6,47 @@ texto (en el navegador, Word, el Bloc de notas, un PDF, un chat, la
 terminal…), aparece un botón **Preguntar** y la respuesta sale ahí mismo, en
 una ventanita, sin abrir Copilot ni cambiar de ventana.
 
-![Ventanita definiendo una palabra (claro) y explicando un texto (oscuro), con los botones Definir, Explicar, Resumir, Traducir y Pregunta, y el botón Preguntar](captura.png)
+![Ventanita de cristal definiendo una palabra (claro) y explicando un texto (oscuro), con los botones Definir, Explicar, Resumir, Traducir y Pregunta, y el botón Preguntar](captura.png)
 
-> La captura sale del banco de pruebas, con un servidor falso; las esquinas,
-> el borde y la sombra (que en Windows pone DWM) están simulados.
+> La captura sale del banco de pruebas, con un servidor falso; el
+> desenfoque de lo de atrás, las esquinas, el borde y la sombra (que en
+> Windows pone DWM) están simulados.
 
 ## Qué hace
 
 - Al seleccionar texto en una página (arrastrando o con doble clic) aparece
   **Preguntar** junto al mouse unos segundos. También sirve un atajo
   (Ctrl+Mayús+Espacio de fábrica).
-- La ventanita **define** si seleccionaste de una a tres palabras,
-  **responde** si seleccionaste una pregunta («¿…?» o «…?») y **explica** si
-  es un texto más largo. Los botones **Definir**, **Explicar**, **Resumir**,
-  **Traducir** y **Pregunta** cambian la acción, y abajo puedes escribir tu
-  propia pregunta sobre el texto (Enter).
+- La ventanita **no genera nada hasta que eliges** qué hacer: **Definir**,
+  **Explicar**, **Resumir**, **Traducir** o **Pregunta** (responde la
+  pregunta seleccionada), o escribes tu propia pregunta abajo (Enter).
+  Mientras eliges, el modelo se prepara en segundo plano, así que responde
+  enseguida. Si prefieres que empiece solo, en **Al tocar Preguntar** está
+  el modo automático: define de una a tres palabras, responde si es una
+  pregunta («¿…?» o «…?») y explica un texto más largo.
+- **Foundry Local se enciende y se apaga solo.** Si está apagado (después de
+  reiniciar el equipo o de cerrarlo), al abrir la ventanita el mod lo
+  arranca en segundo plano, sin ventanas (`foundry server start`), espera a
+  que responda y carga el modelo (el último que usaste, o uno de NPU
+  descargado). Abajo dice en qué va: "Iniciando Foundry Local", "Cargando el
+  modelo". Tras un rato **sin consultas** (10 minutos de fábrica; 5, 30, 60
+  o nunca) lo detiene (`foundry server stop`, y si no responde, cierra sus
+  procesos): la NPU y la memoria quedan libres. El mod también libera su
+  ventanita; mientras tanto solo quedan sus ganchos del mouse y el teclado,
+  que no gastan nada mientras no los uses.
+- **Cristal (liquid glass).** Fondo translúcido sobre lo de atrás
+  desenfocado (lo hace Windows), con un reflejo arriba y un borde brillante,
+  más fuerte arriba, como el cristal de Apple; los botones y la caja, de
+  cristal también. Si Windows tiene apagados los *efectos de transparencia*,
+  o con la opción del mod apagada, queda opaca.
+- **Animaciones a 120 cuadros por segundo** (o a la frecuencia de la
+  pantalla, si es mayor): la ventanita aparece subiendo y desvaneciéndose,
+  crece con suavidad mientras llega la respuesta, los botones se iluminan
+  al pasar el mouse, los puntos de "pensando" laten, y se va desvaneciendo.
+  El botón **Preguntar** también aparece y se va suavemente. Usa un
+  temporizador de alta resolución con plazos fijos, y solo mientras algo se
+  mueve: quieta, no dibuja nada. Con *Mostrar animaciones* apagado en
+  Windows, todo cambia al instante.
 - **Cambiar de botón mientras responde** no da "ocupado": al cortar una
   respuesta, Foundry Local sigue generándola unos segundos (la NPU atiende de
   a una) y rechaza la nueva. El mod lo nota, muestra "Esperando a que el
@@ -64,8 +90,10 @@ una ventanita, sin abrir Copilot ni cambiar de ventana.
 
 Con Foundry Local el mod encuentra solo la dirección del servicio (cambia en
 cada arranque) mirando en qué puerto escucha su proceso, sin correr comandos
-(lanzado desde otro programa, `foundry …` puede quedarse colgado). Si no lo encuentra
-así, usa su comando con tiempos cortos y lo arranca si está apagado. Funciona con la versión actual de Foundry Local (`foundry
+(lanzado desde otro programa, `foundry …` puede quedarse colgado). Si no
+está en marcha, lo arranca en segundo plano sin esperar a su comando (que
+puede no terminar nunca) y lo busca otra vez por su puerto, hasta un minuto
+y medio. Funciona con la versión actual de Foundry Local (`foundry
 server …`) y con la anterior (`foundry service …`).
 
 ### Si dice que Foundry Local no está en marcha
@@ -113,10 +141,11 @@ la NPU.
 
 Servicio, dirección, modelo y clave; botón al seleccionar (sí/no); dónde
 funciona (todas las apps o solo navegadores) y apps excluidas; atajo
-(Ctrl+Mayús+Espacio, Ctrl+Alt+Espacio, Alt+Q o ninguno); qué hacer al abrir
-(automático, definir, explicar, responder o esperar); idioma de las respuestas; idioma al
-que traducir; largo máximo de la respuesta; cómo leer la selección; tema de
-la ventanita.
+(Ctrl+Mayús+Espacio, Ctrl+Alt+Espacio, Alt+Q o ninguno); qué hacer al tocar
+Preguntar (esperar a que elijas, automático, definir, explicar o responder);
+cuándo apagar Foundry Local sin uso (5, 10, 30, 60 minutos o nunca); idioma
+de las respuestas; idioma al que traducir; largo máximo de la respuesta;
+cómo leer la selección; efecto de cristal (sí/no); tema de la ventanita.
 
 ## Cómo lee la selección
 
@@ -135,12 +164,18 @@ acentos y emojis), compila `prueba.cpp` (que incluye el mod tal cual) y lo
 corre en Wine, con un `foundry.exe` falso que imita la versión nueva y la
 vieja, y un servidor que, como Foundry, ofrece todo el catálogo pero solo
 responde con modelos cargados (y listas con nombres, solo alias o vacías),
-un `foundrylocald.exe` falso con los comandos de Foundry colgados, y un
+un `foundrylocald.exe` falso con los comandos de Foundry colgados (que
+también hace de servicio que `foundry server start` deja corriendo y
+`foundry server stop` detiene), y un
 "navegador" en primer plano para comprobar que la ventanita no le quita el
 foco, que lo tecleado va a la caja y no a la página, y que vuelve a quedar
 encima si otra ventana la tapa. Como la NPU, el servidor falso atiende de a
 una respuesta y contesta 503 "busy" mientras sigue generando otra, aunque se
-haya cortado: 63 comprobaciones (JSON, respuestas por partes, elección del
+haya cortado: 79 comprobaciones (JSON, respuestas por partes, elección del
+modelo de NPU, arrancar Foundry apagado en segundo plano, detenerlo sin uso
+y volver a arrancarlo, que al tocar Preguntar no genere nada y prepare el
+modelo mientras tanto, el fondo translúcido del cristal con el texto
+nítido, que anime a 120 cuadros por segundo y que el hilo vuelva a dormir,
 modelo de NPU, que funcione en cualquier app y no en el escritorio, la barra
 de tareas ni las apps excluidas, que el botón salga solo al seleccionar con
 el cursor de texto, Ctrl+Insert en las consolas, la dirección de Foundry Local en sus dos versiones, la ventanita y sus botones, responder una

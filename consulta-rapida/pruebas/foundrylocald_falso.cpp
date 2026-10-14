@@ -34,6 +34,10 @@ int main() {
     // es cada puerto).
     int alen = sizeof(a);
     getsockname(s, (sockaddr*)&a, &alen);
+    if (FILE* f = fopen("pid.txt", "w")) {
+        fprintf(f, "%lu", GetCurrentProcessId());
+        fclose(f);
+    }
     if (FILE* f = fopen("puerto.txt", "w")) {
         fprintf(f, "%d", ntohs(a.sin_port));
         fclose(f);

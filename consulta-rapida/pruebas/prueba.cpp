@@ -26,6 +26,18 @@ static void TestLog(const wchar_t* fmt, ...) {
 int Wh_GetIntSetting(PCWSTR name, ...) { return _wtoi(g_testSettings[name].c_str()); }
 PCWSTR Wh_GetStringSetting(PCWSTR name, ...) { return _wcsdup(g_testSettings[name].c_str()); }
 void Wh_FreeStringSetting(PCWSTR s) { free((void*)s); }
+static std::map<std::wstring, std::wstring> g_testValues;
+BOOL Wh_SetStringValue(PCWSTR name, PCWSTR value) {
+    g_testValues[name] = value;
+    return TRUE;
+}
+size_t Wh_GetStringValue(PCWSTR name, PWSTR buf, size_t chars) {
+    std::wstring v = g_testValues[name];
+    if (!chars) return 0;
+    wcsncpy(buf, v.c_str(), chars - 1);
+    buf[chars - 1] = 0;
+    return wcslen(buf);
+}
 
 // ---- El mod, sin cambios ----
 #include "../consulta-rapida.wh.cpp"
@@ -71,13 +83,34 @@ static void SaveBits(const char* path, const uint32_t* bits, int w, int h) {
 }
 
 // La ventanita, dibujada con su propio código en un DIB (opaco).
+// La ventanita tal como queda (con el cristal: el fondo translúcido que en
+// Windows se ve sobre lo de atrás desenfocado; a_png.py lo simula).
 static void DumpPopup(const char* path) {
     LayoutPopup();
+    g_pop.answerH = (float)g_pop.answerTarget;
+    LayoutPopup();
+    bool glass = g_pop.glass;
+    g_pop.glass = true;
     Canvas cv(g_pop.w, g_pop.h);
-    PaintPopup(cv.dc);
+    RenderPopup(cv);
+    g_pop.glass = glass;
     GdiFlush();
-    for (int i = 0; i < cv.w * cv.h; i++) cv.bits[i] |= 0xFF000000u;
     SaveBits(path, cv.bits, cv.w, cv.h);
+}
+
+static std::string ReadFile(const char* path);
+
+// Los procesos del servicio falso (Wine no dice de quién es cada puerto).
+static std::vector<Listener> TestListeners() {
+    std::vector<Listener> v;
+    std::string port = ReadFile("puerto.txt"), id = ReadFile("pid.txt");
+    if (port.empty()) return v;
+    DWORD pid = (DWORD)atoi(id.c_str());
+    HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
+    bool alive = !pid || (h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT);
+    if (h) CloseHandle(h);
+    if (alive) v.push_back(Listener{pid, (USHORT)atoi(port.c_str())});
+    return v;
 }
 
 static void Defaults(const wchar_t* endpoint) {
@@ -88,7 +121,9 @@ static void Defaults(const wchar_t* endpoint) {
     g_testSettings[L"apiKey"] = L"";
     g_testSettings[L"showButton"] = L"1";
     g_testSettings[L"hotkey"] = L"ctrlShiftSpace";
-    g_testSettings[L"defaultAction"] = L"auto";
+    g_testSettings[L"onOpen"] = L"auto";
+    g_testSettings[L"glass"] = L"1";
+    g_testSettings[L"foundryIdle"] = L"10";
     g_testSettings[L"answerLanguage"] = L"español";
     g_testSettings[L"translateTo"] = L"inglés";
     g_testSettings[L"maxTokens"] = L"400";
@@ -247,12 +282,7 @@ int wmain() {
         wchar_t cmd[] = L"foundrylocald.exe";
         bool started = CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
         Sleep(700);
-        g_foundryPorts = [] {
-            std::vector<USHORT> v;
-            std::string p = ReadFile("puerto.txt");
-            if (!p.empty()) v.push_back((USHORT)atoi(p.c_str()));
-            return v;
-        };
+        g_foundryListeners = TestListeners;
         ForgetBackend();
         ULONGLONG t0 = GetTickCount64();
         MarkAsk();
@@ -265,13 +295,38 @@ int wmain() {
                   CurrentAnswer().raw == L"Hola desde la NPU.",
               "Con los comandos de Foundry colgados, lo encuentra por su puerto y usa el modelo cargado");
         Check(ms < 6000, "Y en pocos segundos (sin esperar a los comandos)");
-        g_foundryPorts = FoundryListenPorts;
+        g_foundryListeners = FoundryListeners;
         DeleteFileW(L"puerto.txt");
         if (started) {
             TerminateProcess(pi.hProcess, 0);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
+    }
+    {
+        // Foundry apagado, como después de reiniciar o de cerrarlo (y su
+        // comando colgado): el mod lo arranca solo, en segundo plano.
+        SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"start");
+        DeleteFileW(L"puerto.txt");
+        DeleteFileW(L"pid.txt");
+        g_foundryListeners = TestListeners;
+        for (int round = 0; round < 2; round++) {
+            ForgetBackend();
+            ULONGLONG t0 = GetTickCount64();
+            MarkAsk();
+            StartAsk(Action::Define, L"hola", L"");
+            bool ok = WaitAnswer(30000) && CurrentAnswer().error.empty() && CurrentAnswer().raw == L"Hola desde la NPU.";
+            printf("    %llu ms: %ls %ls\n", GetTickCount64() - t0, CurrentAnswer().label.c_str(),
+                   CurrentAnswer().error.c_str());
+            Check(ok && !g_foundryListeners().empty(),
+                  round == 0 ? "Si Foundry Local está apagado, lo arranca solo en segundo plano y responde"
+                             : "Y después de detenerlo, la próxima vez vuelve a arrancarlo");
+            StopFoundry();
+            Check(g_foundryListeners().empty(), "Sin uso, se detiene (libera la NPU y la memoria)");
+        }
+        g_foundryListeners = FoundryListeners;
+        DeleteFileW(L"puerto.txt");
+        DeleteFileW(L"pid.txt");
     }
     ForgetBackend();
     Defaults(L"http://127.0.0.1:8765/v1");
@@ -523,6 +578,119 @@ int wmain() {
     Check(g_askGen.load() == g_since, "Tocar la opción que ya se ve no la vuelve a pedir");
     PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
     Pump(200);
+
+    printf("== Cristal y animaciones ==\n");
+    {
+        MarkAsk();
+        PostMessageW(g_host, WM_APP_SELECTION, 0, (LPARAM)new SelectionResult{L"serendipia", pt, nullptr});
+        Pump(400);
+        WaitAnswer(5000);
+        Pump(300);
+        Check(g_pop.openT == 1 && !g_animating, "La animación de apertura termina y el hilo vuelve a dormir");
+        LayoutPopup();
+        bool glass = g_pop.glass;
+        Canvas cv(g_pop.w, g_pop.h);
+        g_pop.glass = true;
+        RenderPopup(cv);
+        auto alphaAt = [&](int x, int y) { return (int)(cv.bits[(size_t)y * cv.w + x] >> 24); };
+        int gx = 3, gy = (g_pop.answer.top + g_pop.input.top) / 2 + (g_pop.input.top - g_pop.answer.bottom) / 2 - 2;
+        gy = std::min<int>(gy, g_pop.input.top - 2);
+        int a1 = alphaAt(gx, gy);
+        int textA = 0;
+        for (int y = g_pop.chips[0].top; y < g_pop.chips[0].bottom; y++) {
+            for (int x = g_pop.chips[0].left; x < g_pop.chips[0].right; x++) textA = std::max(textA, alphaAt(x, y));
+        }
+        g_pop.glass = false;
+        RenderPopup(cv);
+        int a2 = alphaAt(gx, gy);
+        g_pop.glass = glass;
+        printf("    alfa del fondo: cristal %d, opaca %d; texto %d\n", a1, a2, textA);
+        Check(a1 > 90 && a1 < 220 && a2 == 255, "Con cristal el fondo es translúcido; sin él, opaco");
+        Check(textA >= 250, "El texto sobre el cristal queda nítido (opaco)");
+        // Mientras espera la respuesta, los puntos se mueven a 120 cuadros por segundo.
+        MarkAsk();
+        PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.chips[2].left + g_pop.chips[2].right) / 2,
+                                                             (g_pop.chips[2].top + g_pop.chips[2].bottom) / 2));
+        Pump(150);
+        uint64_t f0 = g_frameCount;
+        Pump(1000);
+        uint64_t frames = g_frameCount - f0;
+        printf("    %llu cuadros en un segundo\n", (unsigned long long)frames);
+        Check(frames >= 100 && frames <= 520, "Anima a 120 cuadros por segundo (o a la frecuencia de la pantalla)");
+        WaitAnswer(10000);
+        PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+        Pump(300);
+        Check(!IsWindowVisible(g_pop.wnd), "Al cerrarse se desvanece y se oculta");
+    }
+
+    printf("== Al tocar Preguntar espera; Foundry arranca y se apaga solo ==\n");
+    {
+        g_testSettings[L"onOpen"] = L"wait";
+        g_testSettings[L"provider"] = L"foundry";
+        g_testSettings[L"endpoint"] = L"";
+        Wh_ModSettingsChanged();
+        SetEnvironmentVariableW(L"FAKE_FOUNDRY", L"start");
+        DeleteFileW(L"puerto.txt");
+        DeleteFileW(L"pid.txt");
+        g_foundryListeners = TestListeners;
+        g_idleTestMs = 400;
+        uint64_t before = g_askGen.load();
+        PostMessageW(g_host, WM_APP_SELECTION, 0, (LPARAM)new SelectionResult{L"serendipia", pt, nullptr});
+        Pump(400);
+        AnswerState a = CurrentAnswer();
+        Check(IsWindowVisible(g_pop.wnd) && !g_pop.hasAction && a.raw.empty() && a.done && !a.waiting,
+              "Al abrirse no genera nada: espera a que se elija qué hacer");
+        bool prepShown = !CurrentAnswer().prep.empty();
+        bool ready = false;
+        for (ULONGLONG end = GetTickCount64() + 20000; GetTickCount64() < end;) {
+            AnswerState b = CurrentAnswer();
+            prepShown = prepShown || !b.prep.empty();
+            if (!g_warming && b.prep.empty() && !g_foundryListeners().empty()) {
+                ready = true;
+                break;
+            }
+            Pump(20);
+        }
+        printf("    %ls\n", CurrentAnswer().label.c_str());
+        Check(ready && prepShown && CurrentAnswer().label.find(L"Phi-4-mini-instruct-openvino-npu:2") != std::wstring::npos,
+              "Mientras tanto arranca Foundry en segundo plano y deja el modelo listo (y lo dice abajo)");
+        Check(g_askGen.load() == before + 1, "Sin consultar al modelo");
+        MarkAsk();
+        ULONGLONG t0 = GetTickCount64();
+        PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.chips[0].left + g_pop.chips[0].right) / 2,
+                                                             (g_pop.chips[0].top + g_pop.chips[0].bottom) / 2));
+        Check(WaitAnswer(10000) && CurrentAnswer().raw == L"Hola desde la NPU." && GetTickCount64() - t0 < 3000,
+              "Al elegir una opción, responde enseguida");
+        Pump(800);
+        Check(!g_foundryListeners().empty(), "Con la ventanita abierta no se apaga");
+        PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+        bool slept = false;
+        for (ULONGLONG end = GetTickCount64() + 10000; GetTickCount64() < end;) {
+            if (g_foundryListeners().empty() && !g_pop.wnd) {
+                slept = true;
+                break;
+            }
+            Pump(50);
+        }
+        Check(slept, "Tras un rato sin uso, Foundry se detiene y la ventanita se libera (reposo)");
+        // Y al volver, todo arranca otra vez.
+        PostMessageW(g_host, WM_APP_SELECTION, 0, (LPARAM)new SelectionResult{L"hola", pt, nullptr});
+        Pump(300);
+        MarkAsk();
+        PostMessageW(g_pop.wnd, WM_LBUTTONUP, 0, MAKELPARAM((g_pop.chips[0].left + g_pop.chips[0].right) / 2,
+                                                             (g_pop.chips[0].top + g_pop.chips[0].bottom) / 2));
+        Check(WaitAnswer(30000) && CurrentAnswer().raw == L"Hola desde la NPU.", "Al volver a abrirla, arranca de nuevo y responde");
+        PostMessageW(g_pop.wnd, WM_CLOSE, 0, 0);
+        Pump(300);
+        StopFoundry();
+        g_idleTestMs = 0;
+        g_foundryListeners = FoundryListeners;
+        DeleteFileW(L"puerto.txt");
+        DeleteFileW(L"pid.txt");
+        g_testSettings[L"onOpen"] = L"auto";
+        g_testSettings[L"provider"] = L"custom";
+        Wh_ModSettingsChanged();
+    }
 
     // Errores claros.
     g_testSettings[L"endpoint"] = L"http://127.0.0.1:8765/error/v1";
