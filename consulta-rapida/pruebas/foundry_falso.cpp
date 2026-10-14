@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cwchar>
 
 static const char* kCached[] = {"DeepSeek-R1-Distill-Qwen-7B-openvino-npu:4", "Phi-4-mini-instruct-openvino-npu:2"};
@@ -25,6 +26,37 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 3) return 1;
     bool server = !wcscmp(argv[1], L"server"), service = !wcscmp(argv[1], L"service");
     bool status = !wcscmp(argv[2], L"status");
+    if (!wcscmp(mode, L"start")) {
+        // Apagado, como después de reiniciar: «server start» deja corriendo
+        // el servicio (foundrylocald.exe) y el comando se queda colgado, como
+        // a veces desde otro programa; «server status» también se cuelga.
+        if (server && !wcscmp(argv[2], L"start")) {
+            STARTUPINFOW si{sizeof(si)};
+            PROCESS_INFORMATION pi{};
+            wchar_t cmd[] = L"foundrylocald.exe";
+            if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+            Sleep(60000);
+            return 0;
+        }
+        if (server && !wcscmp(argv[2], L"stop")) {
+            char buf[32] = {};
+            if (FILE* f = fopen("pid.txt", "rb")) {
+                fread(buf, 1, sizeof(buf) - 1, f);
+                fclose(f);
+            }
+            if (HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)atoi(buf))) {
+                TerminateProcess(h, 0);
+                CloseHandle(h);
+            }
+            printf("Foundry Local stopped\n");
+            return 0;
+        }
+        if (server && status) Sleep(60000);
+        return 1;
+    }
     bool alias = !wcscmp(mode, L"alias"), silent = !wcscmp(mode, L"silent");
     if (!wcscmp(mode, L"load") || alias || silent) {
         if (server && status) {

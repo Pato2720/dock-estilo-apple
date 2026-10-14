@@ -17,9 +17,14 @@ def load(f):
             op[x, y] = (min(255, R * 255 // A), min(255, G * 255 // A), min(255, B * 255 // A), A) if A else (0, 0, 0, 0)
     return out
 
-def framed(img, dark, radius=8):
-    # Esquinas, borde y sombra: en Windows los pone DWM.
+def framed(img, dark, behind=None, radius=8):
+    # Esquinas, borde y sombra: en Windows los pone DWM. Con 'behind', el
+    # cristal: lo de atrás desenfocado (también lo hace DWM) bajo la ventanita.
     w, h = img.size
+    if behind is not None:
+        glass = behind.resize((w, h)).filter(ImageFilter.GaussianBlur(14)).convert("RGBA")
+        glass.alpha_composite(img)
+        img = glass
     m = 24
     out = Image.new("RGBA", (w + 2 * m, h + 2 * m), (0, 0, 0, 0))
     shadow = Image.new("L", out.size, 0)
@@ -36,7 +41,9 @@ def framed(img, dark, radius=8):
 
 os.makedirs("png", exist_ok=True)
 wp = Image.open("../../herramientas/pruebas/fondo.png").convert("RGBA")
-pops = [framed(load("out/1-definir-claro.bgra"), False), framed(load("out/2-explicar-oscuro.bgra"), True)]
+p1, p2 = load("out/1-definir-claro.bgra"), load("out/2-explicar-oscuro.bgra")
+pops = [framed(p1, False, wp.crop((34, 34, 34 + p1.width, 34 + p1.height))),
+        framed(p2, True, wp.crop((p1.width + 92, 34, p1.width + 92 + p2.width, 34 + p2.height)))]
 pills = [load("out/4-boton-claro.bgra"), load("out/5-boton-oscuro.bgra")]
 W = sum(p.width for p in pops) + 30
 H = max(p.height for p in pops) + max(p.height for p in pills) + 40
